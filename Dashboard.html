@@ -267,7 +267,7 @@ function renderOverview(){
   var p = $('tab-overview');
   if(!emps.length){ p.innerHTML = emptyState('Belum ada respons karyawan'+(FILTER?' untuk divisi '+FILTER:'')+'. Data akan muncul setelah form diisi.'); return; }
 
-  var barsVals = emps.map(function(e){return avgBars(e.bars);}).filter(function(x){return x!=null;});
+  var barsVals = emps.map(function(e){return avgBars(e.resolvedBars||e.bars);}).filter(function(x){return x!=null;});
   var avgB = barsVals.length ? (barsVals.reduce(function(a,b){return a+b;},0)/barsVals.length) : null;
   var reworkVals = emps.map(function(e){return firstNum(e.rework);}).filter(function(x){return x!=null;});
   var avgR = reworkVals.length ? (reworkVals.reduce(function(a,b){return a+b;},0)/reworkVals.length) : null;
@@ -276,7 +276,7 @@ function renderOverview(){
   p.innerHTML =
     '<div class="grid grid-cols-2 lg:grid-cols-4 gap-4 mb-6">'+
       statCard('Responden Karyawan', emps.length, 'orang', 'Total yang sudah mengisi')+
-      statCard('Rata-rata Kompetensi', avgB!=null?avgB.toFixed(1):'-', '/ 5', 'Level BARS rata-rata')+
+      statCard('Rata-rata Kompetensi', avgB!=null?avgB.toFixed(1):'-', '/ 5', 'Skor final (hasil validasi)')+
       statCard('Rata-rata Rework', avgR!=null?avgR.toFixed(0):'-', '%', 'Tingkat revisi ulang')+
       statCard('Total Lembur', otTotal||'-', 'jam', 'Akumulasi seluruh tim')+
     '</div>'+
@@ -330,15 +330,16 @@ function renderOkrChart(emps){
 }
 function renderTracker(emps){
   var html = '<table class="w-full text-sm"><thead><tr class="text-left text-gray-400 border-b border-gray-100">'+
-    '<th class="py-2 pr-4">Nama</th><th class="pr-4">Divisi</th><th class="pr-4">Form Karyawan</th><th class="pr-4">Dinilai Manager</th><th>Kompetensi</th></tr></thead><tbody>';
+    '<th class="py-2 pr-4">Nama</th><th class="pr-4">Divisi</th><th class="pr-4">Form Karyawan</th><th class="pr-4">Validasi</th><th>Skor Final</th></tr></thead><tbody>';
   emps.forEach(function(e){
     var rated = managerRatingFor(e.name) ? '<span class="text-green-600">&#10003; Ya</span>' : '<span class="text-gray-300">Belum</span>';
-    var ab = avgBars(e.bars);
+    var valid = e.validated ? '<span class="text-green-600">&#10003; Tervalidasi</span>' : '<span class="text-gray-300">Belum</span>';
+    var ab = avgBars(e.resolvedBars||e.bars);
     html += '<tr class="border-b border-gray-50 hover:bg-surface cursor-pointer" onclick="gotoEmployee(\''+esc(e.name).replace(/'/g,"")+'\')">'+
       '<td class="py-2 pr-4 font-medium">'+esc(e.name||'-')+'</td>'+
       '<td class="pr-4">'+esc(e.division||'-')+'</td>'+
       '<td class="pr-4"><span class="text-green-600">&#10003; Ya</span></td>'+
-      '<td class="pr-4">'+rated+'</td>'+
+      '<td class="pr-4">'+valid+'</td>'+
       '<td class="num">'+(ab!=null?ab.toFixed(1):'-')+'</td></tr>';
   });
   html += '</tbody></table>';
@@ -378,13 +379,13 @@ function renderEmpProfile(){
     '</div></div>'+
     '<div class="grid lg:grid-cols-2 gap-6 mb-6">'+
       '<div class="card p-5"><h3 class="font-bold mb-1">Profil Kompetensi</h3>'+
-        '<p class="text-xs text-gray-400 mb-3">Biru: penilaian diri &middot; Kuning: penilaian manager</p>'+
+        '<p class="text-xs text-gray-400 mb-3">Biru: penilaian diri &middot; Kuning: hasil akhir (validasi)</p>'+
         '<div style="height:300px"><canvas id="cEmpRadar"></canvas></div></div>'+
       '<div class="space-y-4">'+
         '<div class="grid grid-cols-3 gap-3">'+
           miniMetric('Lembur', firstNum(e.overtime), 'jam')+
           miniMetric('Rework', firstNum(e.rework), '%')+
-          miniMetric('Kompetensi', avgBars(e.bars), '/5')+
+          miniMetric('Skor Final', avgBars(e.resolvedBars||e.bars), '/5')+
         '</div>'+
         okrBox(e)+
       '</div>'+
@@ -393,7 +394,8 @@ function renderEmpProfile(){
 
   // mini sidebar
   $('empMini').innerHTML =
-    '<p class="text-gray-400">Kompetensi rata-rata</p><p class="text-2xl font-extrabold num">'+(avgBars(e.bars)!=null?avgBars(e.bars).toFixed(1):'-')+'</p>'+
+    '<p class="text-gray-400">Skor kompetensi final</p><p class="text-2xl font-extrabold num">'+(avgBars(e.resolvedBars||e.bars)!=null?avgBars(e.resolvedBars||e.bars).toFixed(1):'-')+'</p>'+
+    '<p class="text-gray-400 mt-2">Status validasi</p><p class="font-semibold">'+(e.validated?'<span class="text-green-600">&#10003; Tervalidasi</span>':'<span class="text-gray-400">Belum divalidasi</span>')+'</p>'+
     '<p class="text-gray-400 mt-2">Rekomendasi</p><p class="font-semibold">'+esc(rec||'-')+'</p>';
 
   renderEmpRadar(e, mr);
@@ -435,9 +437,11 @@ function renderEmpRadar(e, mr){
   destroyChart('cEmpRadar');
   var comps = DATA.values || [];
   var self = comps.map(function(c){return e.bars[c]||null;});
-  var other = comps.map(function(c){return mr && mr.bars ? (mr.bars[c]||null) : null;});
-  var ds = [{ label:'Penilaian Diri', data:self, borderColor:'#3B82F6', backgroundColor:'rgba(59,130,246,.15)', borderWidth:2, pointBackgroundColor:'#3B82F6' }];
-  if(mr){ ds.push({ label:'Penilaian Manager', data:other, borderColor:'#F0B429', backgroundColor:'rgba(240,180,41,.18)', borderWidth:2, pointBackgroundColor:'#F0B429' }); }
+  var fin = comps.map(function(c){return (e.resolvedBars && e.resolvedBars[c]) || null;});
+  var ds = [
+    { label:'Penilaian Diri', data:self, borderColor:'#3B82F6', backgroundColor:'rgba(59,130,246,.15)', borderWidth:2, pointBackgroundColor:'#3B82F6' },
+    { label:'Hasil Akhir (Validasi)', data:fin, borderColor:'#F0B429', backgroundColor:'rgba(240,180,41,.18)', borderWidth:2, pointBackgroundColor:'#F0B429' }
+  ];
   charts.cEmpRadar = new Chart($('cEmpRadar'),{
     type:'radar', data:{ labels:comps, datasets:ds },
     options:{ responsive:true, maintainAspectRatio:false,
@@ -474,7 +478,7 @@ function renderDivBars(divs){
   var palette = ['#F0B429','#3B82F6','#111111'];
   var ds = divs.map(function(d,i){
     return { label:d, backgroundColor:palette[i%palette.length], borderRadius:5,
-      data: comps.map(function(c){ return avgOf(divEmps(d).map(function(e){return e.bars[c]||null;})) || 0; }) };
+      data: comps.map(function(c){ return avgOf(divEmps(d).map(function(e){return (e.resolvedBars&&e.resolvedBars[c])||e.bars[c]||null;})) || 0; }) };
   });
   charts.cDivBars = new Chart($('cDivBars'),{
     type:'bar', data:{ labels:comps, datasets:ds },
@@ -504,7 +508,7 @@ function renderDivScore(divs){
     return { d:d, n:es.length,
       ot: avgOf(es.map(function(e){return firstNum(e.overtime);})),
       rw: avgOf(es.map(function(e){return firstNum(e.rework);})),
-      okr: okr, bars: avgOf(es.map(function(e){return avgBars(e.bars);})) };
+      okr: okr, bars: avgOf(es.map(function(e){return avgBars(e.resolvedBars||e.bars);})) };
   });
   var html='<table class="w-full text-sm"><thead><tr class="text-left text-gray-400 border-b border-gray-100">'+
     '<th class="py-2 pr-4">Divisi</th><th class="pr-4">Jumlah</th><th class="pr-4">Avg Lembur</th><th class="pr-4">Avg Rework</th><th class="pr-4">Avg OKR</th><th>Avg Kompetensi</th></tr></thead><tbody>';
@@ -529,7 +533,7 @@ function renderHeatmap(){
   if(!emps.length){ p.innerHTML = emptyState('Belum ada data kompetensi.'); return; }
   p.innerHTML =
     '<div class="flex items-center gap-2 mb-4 flex-wrap">'+
-      hmBtn('self','Penilaian Diri')+hmBtn('cross','Penilaian Manager')+hmBtn('gap','Analisis Gap')+
+      hmBtn('self','Penilaian Diri')+hmBtn('final','Hasil Akhir (Validasi)')+hmBtn('gap','Analisis Gap')+
     '</div>'+
     '<div class="card p-5 overflow-x-auto"><div id="hmGrid"></div></div>'+
     '<div class="card p-4 mt-4 flex items-center gap-4 flex-wrap text-xs">'+
@@ -553,14 +557,13 @@ function drawHeatmap(){
   emps.forEach(function(e){
     head += '<div class="text-sm font-medium truncate pr-2 flex items-center cursor-pointer hover:text-brand-dark" title="'+esc(e.name)+'" onclick="gotoEmployee(\''+esc(e.name).replace(/\'/g,"")+'\')">'+esc(e.name||'-')+'</div>';
     comps.forEach(function(c){
-      var mr = managerRatingFor(e.name);
       var self = e.bars[c]||null;
-      var other = mr&&mr.bars ? (mr.bars[c]||null) : null;
+      var fin = (e.resolvedBars && e.resolvedBars[c]) || null;
       var cell;
       if(HM_MODE==='self') cell = cellHtml(self, e.name, c, 'Diri');
-      else if(HM_MODE==='cross') cell = cellHtml(other, e.name, c, 'Manager');
-      else { // gap
-        if(self!=null && other!=null){ var g=self-other; cell = gapCell(g, e.name, c, self, other); }
+      else if(HM_MODE==='final') cell = cellHtml(fin, e.name, c, 'Final');
+      else { // gap: diri vs hasil akhir
+        if(self!=null && fin!=null){ var g=self-fin; cell = gapCell(g, e.name, c, self, fin); }
         else cell = '<div class="hm-cell rounded-lg flex items-center justify-center text-xs text-gray-300" style="height:44px;background:#F3F4F6">-</div>';
       }
       head += cell;
@@ -613,7 +616,7 @@ function renderMgrProfile(){
     '</div></div>'+
     '<div class="grid lg:grid-cols-2 gap-6 mb-6">'+
       '<div class="card p-5"><h3 class="font-bold mb-1">Kompetensi Kepemimpinan</h3>'+
-        '<p class="text-xs text-gray-400 mb-3">Biru: penilaian diri &middot; Kuning: penilaian owner</p>'+
+        '<p class="text-xs text-gray-400 mb-3">Biru: penilaian diri &middot; Kuning: hasil akhir (validasi owner)</p>'+
         '<div style="height:320px"><canvas id="cMgrRadar"></canvas></div></div>'+
       '<div class="card p-5"><h3 class="font-bold mb-3">Keselarasan Visi-Misi</h3>'+
         kv('Komunikasi visi-misi ke tim', self&&self.visiMisiComm)+
@@ -630,7 +633,8 @@ function renderMgrRadar(self, owner){
   var comps = DATA.leadership || [];
   var ds = [];
   if(self) ds.push({ label:'Penilaian Diri', data:comps.map(function(c){return self.bars[c]||null;}), borderColor:'#3B82F6', backgroundColor:'rgba(59,130,246,.15)', borderWidth:2 });
-  if(owner) ds.push({ label:'Penilaian Owner', data:comps.map(function(c){return owner.bars[c]||null;}), borderColor:'#F0B429', backgroundColor:'rgba(240,180,41,.18)', borderWidth:2 });
+  var finalObj = (self && self.resolvedBars) ? self.resolvedBars : (owner ? owner.bars : null);
+  if(finalObj) ds.push({ label:'Hasil Akhir (Validasi)', data:comps.map(function(c){return finalObj[c]||null;}), borderColor:'#F0B429', backgroundColor:'rgba(240,180,41,.18)', borderWidth:2 });
   charts.cMgrRadar = new Chart($('cMgrRadar'),{
     type:'radar', data:{ labels:comps, datasets:ds },
     options:{ responsive:true, maintainAspectRatio:false,

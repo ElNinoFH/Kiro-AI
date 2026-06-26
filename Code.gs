@@ -442,7 +442,7 @@ function buildOwnerToManagerForm(ssId) {
 
 // Isi dengan ID spreadsheet master (ambil dari URL: /d/<ID>/edit).
 // Boleh dikosongkan jika script ini terikat (bound) langsung ke spreadsheet.
-var DASHBOARD_SPREADSHEET_ID = '';
+var DASHBOARD_SPREADSHEET_ID = '1loSkP_iOECP0HyCEyGNofr-nIa-kooyBuNmipyr3HDg';
 
 function doGet() {
   return HtmlService.createHtmlOutputFromFile('Dashboard')
@@ -666,7 +666,87 @@ function _buildDashboardData() {
     }
   });
 
+  _resolveBars_(ss, data);
+
   return data;
+}
+
+// Bangun resolvedBars (skor final): Validasi -> Cross-reference/Owner -> Self
+function _resolveBars_(ss, data) {
+  var valK = _readValidations_(ss, 'karyawan');
+  var valM = _readValidations_(ss, 'manager');
+
+  // Karyawan: prioritas validasi karyawan -> cross-reference manager -> self
+  data.employees.forEach(function (e) {
+    var cross = null;
+    data.managerEval.forEach(function (m) {
+      if (norm_(m.employee) === norm_(e.name)) { cross = m.bars; }
+    });
+    var resolved = {}, source = {};
+    (data.values || []).forEach(function (comp) {
+      var selfLvl = e.bars[comp] || null;
+      var v = valK[e.name] && valK[e.name].comps[comp];
+      if (v && String(v.status) === 'Tidak' && v.level) {
+        resolved[comp] = Number(v.level); source[comp] = 'validasi';
+      } else if (v && String(v.status) === 'Benar') {
+        resolved[comp] = selfLvl; source[comp] = 'validasi';
+      } else if (cross && cross[comp]) {
+        resolved[comp] = cross[comp]; source[comp] = 'crossref';
+      } else if (selfLvl) {
+        resolved[comp] = selfLvl; source[comp] = 'self';
+      }
+    });
+    e.resolvedBars = resolved;
+    e.barsSource = source;
+    e.validated = !!(valK[e.name] && valK[e.name].any);
+  });
+
+  // Manager: prioritas validasi manager (owner) -> form owner -> self
+  data.managerSelf.forEach(function (m) {
+    var owner = null;
+    data.ownerEval.forEach(function (o) {
+      if (norm_(o.manager) === norm_(m.manager)) { owner = o.bars; }
+    });
+    var resolved = {}, source = {};
+    (data.leadership || []).forEach(function (comp) {
+      var selfLvl = m.bars[comp] || null;
+      var v = valM[m.manager] && valM[m.manager].comps[comp];
+      if (v && String(v.status) === 'Tidak' && v.level) {
+        resolved[comp] = Number(v.level); source[comp] = 'validasi';
+      } else if (v && String(v.status) === 'Benar') {
+        resolved[comp] = selfLvl; source[comp] = 'validasi';
+      } else if (owner && owner[comp]) {
+        resolved[comp] = owner[comp]; source[comp] = 'owner';
+      } else if (selfLvl) {
+        resolved[comp] = selfLvl; source[comp] = 'self';
+      }
+    });
+    m.resolvedBars = resolved;
+    m.barsSource = source;
+    m.validated = !!(valM[m.manager] && valM[m.manager].any);
+  });
+}
+
+// Baca sheet hasil validasi -> { subjek: { any:true, comps:{ comp:{status,level} } } }
+function _readValidations_(ss, kind) {
+  var out = {};
+  var sh = ss.getSheetByName(_valSheetName(kind));
+  if (!sh) { return out; }
+  var vv = sh.getDataRange().getValues();
+  for (var i = 1; i < vv.length; i++) {
+    var subj = vv[i][2]; if (!subj) { continue; }
+    if (!out[subj]) { out[subj] = { any: false, comps: {} }; }
+    out[subj].any = true;
+    var q = String(vv[i][3]); var tipe = String(vv[i][4]);
+    if (tipe === 'bars') {
+      var idx = q.toLowerCase().indexOf('untuk kompetensi');
+      if (idx >= 0) {
+        var comp = q.substring(idx + 'untuk kompetensi'.length).replace(/\?\s*$/, '').trim();
+        out[subj].comps[comp] = { status: vv[i][6], level: vv[i][7] };
+      }
+    }
+  }
+  return out;
 }
 
 
