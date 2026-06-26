@@ -509,7 +509,7 @@ function sheetRows_(sheet) {
   var headers = values[0].map(function (h) { return String(h).trim(); });
   var rows = [];
   for (var r = 1; r < values.length; r++) {
-    var has = values[r].some(function (c) { return c !== '' && c !== null; });
+    var has = values[r].some(function (c) { return c !== '' && c !== null && String(c).trim() !== ''; });
     if (has) { rows.push(values[r]); }
   }
   return { headers: headers, rows: rows };
@@ -605,8 +605,10 @@ function _buildDashboardData() {
 
     if (sheetType === 'karyawan') {
       parsed.rows.forEach(function (row) {
+        var nm = val(row, 'nama lengkap');
+        if (!nm || !String(nm).trim()) { return; }
         data.employees.push({
-          name: val(row, 'nama lengkap'),
+          name: nm,
           division: val(row, 'divisi'),
           position: val(row, 'posisi'),
           manager: val(row, 'atasan langsung'),
@@ -638,8 +640,10 @@ function _buildDashboardData() {
     } else if (sheetType === 'managerself') {
 
       parsed.rows.forEach(function (row) {
+        var nm = val(row, 'nama manager');
+        if (!nm || !String(nm).trim()) { return; }
         data.managerSelf.push({
-          manager: val(row, 'nama manager'),
+          manager: nm,
           division: val(row, 'divisi yang dipimpin'),
           teamSize: val(row, 'jumlah anggota tim'),
           visiMisiComm: val(row, 'mengomunikasikan visi-misi'),
@@ -649,8 +653,10 @@ function _buildDashboardData() {
       });
     } else if (sheetType === 'owner') {
       parsed.rows.forEach(function (row) {
+        var nm = val(row, 'nama manager yang dinilai');
+        if (!nm || !String(nm).trim()) { return; }
         data.ownerEval.push({
-          manager: val(row, 'nama manager yang dinilai'),
+          manager: nm,
           division: val(row, 'divisi'),
           visiMisiStatement: val(row, 'membawa visi-misi'),
           recommendation: val(row, 'rekomendasi owner'),
@@ -660,6 +666,8 @@ function _buildDashboardData() {
       });
     } else if (sheetType === 'manager') {
       parsed.rows.forEach(function (row) {
+        var emp = val(row, 'nama karyawan yang dinilai');
+        if (!emp || !String(emp).trim()) { return; }
         data.managerEval.push({
           manager: val(row, 'nama manager (penilai)'),
           division: val(row, 'divisi'),
@@ -871,7 +879,7 @@ function getValidationPayload(kind) {
     var subjects = [], dataMap = {};
     src.rows.forEach(function (r) {
       var nm = keyIdx >= 0 ? cellStr_(r[keyIdx]) : '';
-      if (!nm) { return; }
+      if (!nm || !String(nm).trim()) { return; }
       var items = [];
       for (var c = 0; c < headers.length; c++) {
         var h = String(headers[c]);
