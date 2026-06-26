@@ -219,6 +219,8 @@ function switchTab(t){
   $('tab-'+t).classList.remove('hidden');
   $('pageTitle').textContent = TAB_TITLES[t];
   renderTab(t);
+  // Fix: paksa chart menggambar ulang dengan ukuran benar (atasi chart kosong saat render pertama)
+  setTimeout(function(){ for(var k in charts){ try{ charts[k].resize(); }catch(e){} } }, 60);
 }
 function renderAll(){ renderTab(CURRENT_TAB); }
 function renderTab(t){
@@ -353,7 +355,8 @@ function renderKaryawan(){
   var emps = empFiltered();
   var p = $('tab-karyawan');
   if(!emps.length){ p.innerHTML = emptyState('Belum ada data karyawan'+(FILTER?' untuk divisi '+FILTER:'')+'.'); return; }
-  var opts = emps.map(function(e){return '<option>'+esc(e.name||'(tanpa nama)')+'</option>';}).join('');
+  var named = emps.filter(function(e){ return e.name && String(e.name).trim(); });
+  var opts = named.map(function(e){return '<option>'+esc(e.name)+'</option>';}).join('');
   p.innerHTML =
     '<div class="grid lg:grid-cols-[260px_1fr] gap-6">'+
       '<div class="card p-4 h-max"><label class="text-xs font-semibold text-gray-400">PILIH KARYAWAN</label>'+
@@ -390,6 +393,7 @@ function renderEmpProfile(){
         okrBox(e)+
       '</div>'+
     '</div>'+
+    workDetailBox(e)+
     reflectionBox(e, mr);
 
   // mini sidebar
@@ -424,6 +428,26 @@ function okrBox(e){
     '<p class="text-sm text-gray-600"><b>Target:</b> '+esc(e.okrTarget||'-')+'</p>'+
     '<p class="text-sm text-gray-600"><b>Aktual:</b> '+esc(e.okrActual||'-')+'</p>'+ bar +
     (e.okrCause?'<p class="text-xs text-gray-400 mt-2"><b>Penyebab selisih:</b> '+esc(e.okrCause)+'</p>':'')+'</div>';
+}
+function workDetailBox(e){
+  function r(t,v){ return '<div class="py-2 border-b border-gray-50 last:border-0"><p class="text-xs font-semibold text-gray-400">'+esc(t)+'</p><p class="text-sm text-gray-700 whitespace-pre-wrap mt-0.5">'+(v?esc(v):'<span class="text-gray-300">-</span>')+'</p></div>'; }
+  var left =
+    r('Tugas & tanggung jawab utama', e.mainDuties)+
+    r('Rutinitas harian', e.dailyRoutine)+
+    r('Tugas rutin mingguan / bulanan / kuartalan', e.weeklyTasks)+
+    r('Tugas tambahan di luar job desc', e.extraTasks)+
+    r('Rata-rata waktu per tugas utama', e.avgTime)+
+    r('Pekerjaan paling memakan waktu', e.mostTime);
+  var right =
+    r('% Administratif vs teknis', e.adminPct)+
+    r('Waktu rapat per minggu', e.meetingTime)+
+    r('Aplikasi & alat yang dipakai', e.tools)+
+    r('Ketergantungan pihak lain', e.dependency)+
+    r('Frekuensi & lama menunggu', e.waitTime)+
+    r('Kualitas data/brief diterima (Material)', e.material);
+  return '<div class="card p-5 mb-6 fade-in"><h3 class="font-bold mb-3">Detail Pekerjaan</h3>'+
+    '<div class="grid md:grid-cols-2 gap-x-8">'+
+    '<div>'+left+'</div><div>'+right+'</div></div></div>';
 }
 function reflectionBox(e, mr){
   function blk(t,v){ return v?'<div class="mb-3"><p class="text-xs font-semibold text-gray-400">'+esc(t)+'</p><p class="text-sm text-gray-700">'+esc(v)+'</p></div>':''; }
@@ -589,8 +613,8 @@ function renderManager(){
   var mgrs = (DATA.managerSelf||[]).filter(function(m){return inFilter(m.division);});
   var ownerOnly = (DATA.ownerEval||[]).filter(function(o){return inFilter(o.division);});
   var names = {};
-  mgrs.forEach(function(m){names[m.manager||'(tanpa nama)']=1;});
-  ownerOnly.forEach(function(o){names[o.manager||'(tanpa nama)']=1;});
+  mgrs.forEach(function(m){ if(m.manager && String(m.manager).trim()) names[m.manager]=1; });
+  ownerOnly.forEach(function(o){ if(o.manager && String(o.manager).trim()) names[o.manager]=1; });
   var list = Object.keys(names);
   if(!list.length){ p.innerHTML = emptyState('Belum ada data asesmen manager.'); return; }
   p.innerHTML =

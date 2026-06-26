@@ -620,6 +620,18 @@ function _buildDashboardData() {
           obstacles: val(row, 'lebih lama dari seharusnya'),
           simplify: val(row, 'bisa disederhanakan'),
           develop: val(row, 'paling ingin anda kembangkan'),
+          mainDuties: val(row, 'tugas dan tanggung jawab utama'),
+          dailyRoutine: val(row, 'rutinitas harian'),
+          weeklyTasks: val(row, 'tugas rutin mingguan'),
+          extraTasks: val(row, 'tugas tambahan di luar'),
+          avgTime: val(row, 'rata-rata waktu'),
+          mostTime: val(row, 'paling banyak memakan waktu'),
+          adminPct: val(row, 'administratif'),
+          meetingTime: val(row, 'waktu rapat'),
+          tools: val(row, 'aplikasi'),
+          dependency: val(row, 'bergantung pada hasil'),
+          waitTime: val(row, 'seberapa sering menunggu'),
+          material: val(row, 'lengkap dan akurat'),
           bars: levels(row)
         });
       });
