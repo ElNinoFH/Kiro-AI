@@ -564,6 +564,30 @@ function _buildDashboardData() {
 
     var lname = name.toLowerCase();
 
+    // Deteksi tipe sheet berdasarkan header (bukan nama sheet)
+    // karena Google Sheets memberi nama otomatis "Form Responses 1/2/3/4"
+    var hJoined = headers.map(function(h){ return String(h).toLowerCase(); }).join('|||');
+    var sheetType;
+    if (hJoined.indexOf('nama lengkap') >= 0 && hJoined.indexOf('atasan langsung') >= 0) {
+      sheetType = 'karyawan';
+    } else if (hJoined.indexOf('nama karyawan yang dinilai') >= 0 && hJoined.indexOf('nama manager (penilai)') >= 0) {
+      sheetType = 'manager';
+    } else if (hJoined.indexOf('divisi yang dipimpin') >= 0 && hJoined.indexOf('jumlah anggota tim') >= 0) {
+      sheetType = 'managerself';
+    } else if (hJoined.indexOf('nama manager yang dinilai') >= 0) {
+      sheetType = 'owner';
+    } else if (lname.indexOf('karyawan') >= 0) {
+      sheetType = 'karyawan';
+    } else if (lname.indexOf('penilaian diri') >= 0) {
+      sheetType = 'managerself';
+    } else if (lname.indexOf('owner') >= 0) {
+      sheetType = 'owner';
+    } else if (lname.indexOf('manager') >= 0) {
+      sheetType = 'manager';
+    } else {
+      sheetType = 'unknown';
+    }
+
     function val(row, kw) { var c = findCol_(headers, kw); return c >= 0 ? cellStr_(row[c]) : ''; }
     function levels(row) {
       var out = {};
@@ -579,7 +603,7 @@ function _buildDashboardData() {
       return out;
     }
 
-    if (lname.indexOf('karyawan') >= 0) {
+    if (sheetType === 'karyawan') {
       parsed.rows.forEach(function (row) {
         data.employees.push({
           name: val(row, 'nama lengkap'),
@@ -599,7 +623,7 @@ function _buildDashboardData() {
           bars: levels(row)
         });
       });
-    } else if (lname.indexOf('penilaian diri') >= 0) {
+    } else if (sheetType === 'managerself') {
 
       parsed.rows.forEach(function (row) {
         data.managerSelf.push({
@@ -611,7 +635,7 @@ function _buildDashboardData() {
           bars: levels(row)
         });
       });
-    } else if (lname.indexOf('owner') >= 0) {
+    } else if (sheetType === 'owner') {
       parsed.rows.forEach(function (row) {
         data.ownerEval.push({
           manager: val(row, 'nama manager yang dinilai'),
@@ -622,7 +646,7 @@ function _buildDashboardData() {
           bars: levels(row)
         });
       });
-    } else if (lname.indexOf('manager') >= 0) {
+    } else if (sheetType === 'manager') {
       parsed.rows.forEach(function (row) {
         data.managerEval.push({
           manager: val(row, 'nama manager (penilai)'),
