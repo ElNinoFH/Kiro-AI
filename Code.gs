@@ -451,10 +451,30 @@ function doGet() {
 }
 
 function getSpreadsheet_() {
-  if (DASHBOARD_SPREADSHEET_ID) { return SpreadsheetApp.openById(DASHBOARD_SPREADSHEET_ID); }
-  var active = SpreadsheetApp.getActive();
-  if (active) { return active; }
-  throw new Error('Set DASHBOARD_SPREADSHEET_ID dengan ID spreadsheet master.');
+  // 1) Pakai ID manual jika sudah diisi
+  if (DASHBOARD_SPREADSHEET_ID) {
+    return SpreadsheetApp.openById(DASHBOARD_SPREADSHEET_ID);
+  }
+  // 2) Cari otomatis di Drive berdasarkan nama spreadsheet hasil createAuditForms()
+  var files = DriveApp.searchFiles(
+    'title contains "Audit Kinerja - Workload Analysis" and ' +
+    'mimeType = "application/vnd.google-apps.spreadsheet" and trashed = false'
+  );
+  var found = null;
+  while (files.hasNext()) {
+    var f = files.next();
+    if (!found || f.getLastUpdated() > found.getLastUpdated()) { found = f; }
+  }
+  if (found) { return SpreadsheetApp.openById(found.getId()); }
+  // 3) Fallback: jika script di-bind langsung ke spreadsheet
+  try {
+    var active = SpreadsheetApp.getActive();
+    if (active) { return active; }
+  } catch (e) { /* bukan bound script */ }
+  throw new Error(
+    'Spreadsheet master tidak ditemukan. Pastikan sudah menjalankan createAuditForms() ' +
+    'atau isi DASHBOARD_SPREADSHEET_ID di baris atas Code.gs dengan ID spreadsheet master.'
+  );
 }
 
 function norm_(s) { return String(s == null ? '' : s).replace(/\s+/g, ' ').trim().toLowerCase(); }
@@ -503,6 +523,14 @@ function cellStr_(c) {
 }
 
 function getDashboardData() {
+  try {
+    return _buildDashboardData();
+  } catch (e) {
+    return { _error: e.message };
+  }
+}
+
+function _buildDashboardData() {
   var ss = getSpreadsheet_();
   var sheets = ss.getSheets();
   var stmtMap = buildStatementMap_();

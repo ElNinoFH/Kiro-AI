@@ -178,6 +178,23 @@ function onErr(e){
   $('tab-'+CURRENT_TAB).innerHTML = '<div class="card p-10 text-center text-gray-500">Gagal memuat data.<br><span class="text-xs">'+esc(e&&e.message)+'</span></div>';
 }
 function onData(d){
+  if (d && d._error) {
+    $('loading').classList.add('hidden');
+    $('tab-'+CURRENT_TAB).innerHTML =
+      '<div class="card p-10 text-center fade-in">'+
+      '<div class="w-14 h-14 rounded-full border-4 border-brand/50 mx-auto mb-4 flex items-center justify-center text-2xl">!</div>'+
+      '<p class="font-bold text-lg mb-2">Spreadsheet master tidak terhubung</p>'+
+      '<p class="text-gray-500 text-sm max-w-md mx-auto mb-4">'+esc(d._error)+'</p>'+
+      '<div class="bg-surface rounded-xl p-4 text-left text-xs text-gray-600 max-w-md mx-auto">'+
+      '<p class="font-bold mb-2">Cara memperbaiki:</p>'+
+      '<ol class="list-decimal pl-4 space-y-1">'+
+      '<li>Pastikan fungsi <code class="bg-gray-100 px-1 rounded">createAuditForms()</code> sudah pernah dijalankan</li>'+
+      '<li>Atau salin ID spreadsheet master dari URL Google Sheets</li>'+
+      '<li>Tempel ke variabel <code class="bg-gray-100 px-1 rounded">DASHBOARD_SPREADSHEET_ID</code> di baris atas Code.gs</li>'+
+      '<li>Deploy ulang Web App (Deploy > Manage deployments > Edit > Deploy)</li>'+
+      '</ol></div></div>';
+    return;
+  }
   DATA = d;
   $('loading').classList.add('hidden');
   $('lastUpdated').textContent = d.meta.lastUpdated || '-';
