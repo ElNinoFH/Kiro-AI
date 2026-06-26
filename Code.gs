@@ -668,3 +668,58 @@ function _buildDashboardData() {
 
   return data;
 }
+
+
+// =============================================================================
+//  RENAME SHEETS — jalankan 1x untuk memberi nama yang benar ke tab spreadsheet
+//  Cara: pilih fungsi renameSheets() di dropdown Apps Script, lalu klik Run.
+// =============================================================================
+function renameSheets() {
+  var ss = getSpreadsheet_();
+  var sheets = ss.getSheets();
+  var log = [];
+
+  var nameMap = {
+    'karyawan'   : 'Form Karyawan',
+    'manager'    : 'Form Manager',
+    'managerself': 'Form Manager (Penilaian Diri)',
+    'owner'      : 'Form Owner'
+  };
+
+  sheets.forEach(function (sheet) {
+    var parsed   = sheetRows_(sheet);
+    var headers  = parsed.headers;
+    var hJoined  = headers.map(function (h) {
+      return String(h).toLowerCase();
+    }).join('|||');
+
+    var type;
+    if (hJoined.indexOf('nama lengkap') >= 0 && hJoined.indexOf('atasan langsung') >= 0) {
+      type = 'karyawan';
+    } else if (hJoined.indexOf('nama karyawan yang dinilai') >= 0 && hJoined.indexOf('nama manager (penilai)') >= 0) {
+      type = 'manager';
+    } else if (hJoined.indexOf('divisi yang dipimpin') >= 0 && hJoined.indexOf('jumlah anggota tim') >= 0) {
+      type = 'managerself';
+    } else if (hJoined.indexOf('nama manager yang dinilai') >= 0) {
+      type = 'owner';
+    }
+
+    if (type) {
+      var newName = nameMap[type];
+      var oldName = sheet.getName();
+      if (oldName !== newName) {
+        sheet.setName(newName);
+        log.push(oldName + '  ->  ' + newName);
+      } else {
+        log.push(oldName + '  (tidak perlu diubah)');
+      }
+    }
+  });
+
+  if (log.length) {
+    Logger.log('=== Hasil Rename ===\n' + log.join('\n'));
+    SpreadsheetApp.getUi().alert('Selesai!\n\n' + log.join('\n'));
+  } else {
+    Logger.log('Tidak ada sheet form yang ditemukan.');
+  }
+}
