@@ -90,6 +90,7 @@
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="divisi" onclick="switchTab('divisi')">Divisi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="kompetensi" onclick="switchTab('kompetensi')">Kompetensi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="manager" onclick="switchTab('manager')">Manager</button>
+        <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="validasi" onclick="switchTab('validasi')">Validasi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="data" onclick="switchTab('data')">Data Mentah</button>
       </div>
       <div class="flex items-center gap-2 shrink-0">
@@ -122,6 +123,7 @@
     <section id="tab-divisi" class="tab-panel hidden"></section>
     <section id="tab-kompetensi" class="tab-panel hidden"></section>
     <section id="tab-manager" class="tab-panel hidden"></section>
+    <section id="tab-validasi" class="tab-panel hidden"></section>
     <section id="tab-data" class="tab-panel hidden"></section>
 
   </main>
@@ -136,7 +138,7 @@ var CURRENT_TAB = 'overview';
 var charts = {};
 var TAB_TITLES = {
   overview:'Overview', karyawan:'Profil Karyawan', divisi:'Perbandingan Divisi',
-  kompetensi:'Heatmap Kompetensi', manager:'Asesmen Manager', data:'Data Mentah'
+  kompetensi:'Heatmap Kompetensi', manager:'Asesmen Manager', validasi:'Validasi Data', data:'Data Mentah'
 };
 var LEVEL_COLORS = ['#FCA5A5','#FCD34D','#F0B429','#86EFAC','#22C55E'];
 var LEVEL_LABELS = ['Awal','Berkembang','Terstandar','Terukur','Unggul'];
@@ -226,6 +228,7 @@ function renderTab(t){
   else if(t==='divisi') renderDivisi();
   else if(t==='kompetensi') renderHeatmap();
   else if(t==='manager') renderManager();
+  else if(t==='validasi') renderValidasi();
   else if(t==='data') renderRaw();
 }
 
@@ -652,6 +655,131 @@ function renderRaw(){
       '<span class="text-xs text-gray-400 num">'+s.rows.length+' baris</span></div>'+
       '<div class="overflow-x-auto"><table class="w-full text-xs">'+thead+'<tbody>'+tbody+'</tbody></table></div></div>';
   }).join('');
+}
+
+
+// ===================== TAB: VALIDASI =====================
+var VAL = { kind:'karyawan', payload:null, subject:'', state:[] };
+
+function renderValidasi(){
+  var p = $('tab-validasi');
+  var subjLabel = VAL.kind==='manager' ? 'Manager' : 'Karyawan';
+  var valLabel  = VAL.kind==='manager' ? 'Owner' : 'Manager';
+  p.innerHTML =
+    '<div class="flex flex-wrap items-center gap-2 mb-4">'+
+      valKindBtn('karyawan','Validasi Karyawan (oleh Manager)')+
+      valKindBtn('manager','Validasi Manager (oleh Owner)')+
+    '</div>'+
+    '<div class="card p-5 mb-4 grid md:grid-cols-3 gap-4 items-end">'+
+      '<div><label class="text-xs font-semibold text-gray-400">NAMA VALIDATOR ('+esc(valLabel)+')</label>'+
+        '<input id="valValidator" placeholder="Nama Anda" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand"></div>'+
+      '<div><label class="text-xs font-semibold text-gray-400">PILIH '+esc(subjLabel).toUpperCase()+'</label>'+
+        '<select id="valSubject" onchange="onValSubject()" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand"><option value="">Memuat...</option></select></div>'+
+      '<div><label class="text-xs font-semibold text-gray-400">PROGRESS</label><div id="valProgress" class="mt-1 text-sm text-gray-500">-</div></div>'+
+    '</div>'+
+    '<div id="valItems"></div>'+
+    '<div id="valSaveBar"></div>';
+  loadValidation();
+}
+function valKindBtn(kind,label){
+  var act = VAL.kind===kind;
+  return '<button onclick="setValKind(\''+kind+'\')" class="px-4 py-2 rounded-lg text-sm font-semibold border '+(act?'bg-brand text-ink border-brand':'bg-white text-gray-500 border-gray-200')+'">'+label+'</button>';
+}
+function setValKind(kind){ VAL.kind=kind; VAL.subject=''; VAL.state=[]; renderValidasi(); }
+
+function loadValidation(){
+  $('valItems').innerHTML = '<div class="text-center py-10 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin"></div></div>';
+  google.script.run.withSuccessHandler(onValPayload).withFailureHandler(function(e){ $('valItems').innerHTML = emptyState('Gagal memuat: '+esc(e.message)); }).getValidationPayload(VAL.kind);
+}
+function onValPayload(d){
+  if(d && d._error){ $('valItems').innerHTML = emptyState(d._error); return; }
+  VAL.payload = d;
+  var sel = $('valSubject');
+  if(!d.subjects.length){ sel.innerHTML='<option value="">(belum ada data)</option>'; $('valItems').innerHTML = emptyState('Belum ada '+(VAL.kind==='manager'?'manager':'karyawan')+' yang mengisi form mandiri.'); $('valProgress').textContent='0 dari 0'; return; }
+  sel.innerHTML = '<option value="">— pilih —</option>' + d.subjects.map(function(s){ var done=d.existing[s]?' \u2713':''; return '<option>'+esc(s)+done+'</option>'; }).join('');
+  $('valProgress').innerHTML = '<span class="num font-bold text-ink">'+d.progress.done+'</span> dari <span class="num">'+d.progress.total+'</span> tervalidasi';
+  $('valItems').innerHTML = '<div class="card p-10 text-center text-gray-400">Pilih nama di atas untuk mulai memvalidasi.</div>';
+  $('valSaveBar').innerHTML = '';
+}
+function onValSubject(){
+  var name = $('valSubject').value.replace(/ \u2713$/,'');
+  VAL.subject = name;
+  if(!name){ $('valItems').innerHTML=''; $('valSaveBar').innerHTML=''; return; }
+  var rec = VAL.payload.data[name];
+  var existing = VAL.payload.existing[name] || {};
+  VAL.state = (rec?rec.items:[]).map(function(it){
+    var ex = existing[it.q] || {};
+    return { q:it.q, a:it.a, type:it.type, comp:it.comp, options:it.options,
+      status: ex.status||'', level: ex.level||'', note: ex.note||'' };
+  });
+  // prefill validator if exists in existing rows (optional)
+  renderValItems();
+}
+function renderValItems(){
+  if(!VAL.state.length){ $('valItems').innerHTML = emptyState('Tidak ada jawaban untuk divalidasi.'); return; }
+  var html = '<div class="space-y-3">';
+  VAL.state.forEach(function(it,i){ html += valCard(it,i); });
+  html += '</div>';
+  $('valItems').innerHTML = html;
+  $('valSaveBar').innerHTML =
+    '<div class="sticky bottom-4 mt-5 flex justify-end">'+
+      '<button onclick="saveValidationNow()" class="px-6 py-3 rounded-xl bg-brand hover:bg-brand-dark text-ink font-bold shadow-lg">Simpan Validasi</button>'+
+    '</div>';
+}
+function valCard(it,i){
+  var isBars = it.type==='bars';
+  var okLabel = 'Benar';
+  var noLabel = isBars ? 'Tidak' : 'Kurang Tepat';
+  var okActive = it.status===okLabel, noActive = it.status===noLabel;
+  var head =
+    '<div class="card p-4">'+
+    '<p class="text-xs font-semibold text-gray-400">'+(isBars?'KOMPETENSI: '+esc(it.comp):'PERTANYAAN')+'</p>'+
+    (isBars?'':'<p class="font-semibold text-sm mt-0.5">'+esc(it.q)+'</p>')+
+    '<p class="text-xs text-gray-400 mt-2">Jawaban '+(VAL.kind==='manager'?'manager':'karyawan')+'</p>'+
+    '<p class="text-sm bg-surface rounded-lg p-2 mt-1 whitespace-pre-wrap">'+esc(it.a||'(kosong)')+'</p>'+
+    '<div class="flex gap-2 mt-3">'+
+      '<button onclick="valStatus('+i+',\''+okLabel+'\')" id="vok-'+i+'" class="px-4 py-1.5 rounded-lg text-sm font-semibold border '+(okActive?'bg-l5 text-ink border-l5':'bg-white text-gray-500 border-gray-200')+'">\u2713 '+okLabel+'</button>'+
+      '<button onclick="valStatus('+i+',\''+noLabel+'\')" id="vno-'+i+'" class="px-4 py-1.5 rounded-lg text-sm font-semibold border '+(noActive?'bg-l1 text-ink border-l1':'bg-white text-gray-500 border-gray-200')+'">\u2717 '+noLabel+'</button>'+
+    '</div>';
+  var cond = '<div id="vcond-'+i+'" class="mt-3 '+(noActive?'':'hidden')+'">';
+  if(isBars){
+    cond += '<label class="text-xs font-semibold text-gray-400">Pilih level yang benar menurut Anda</label>'+
+      '<select onchange="valLevel('+i+',this.value)" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-brand">'+
+      '<option value="">— pilih level —</option>'+
+      (it.options||[]).map(function(opt,li){ var sel=(String(it.level)===String(li+1))?' selected':''; return '<option value="'+(li+1)+'"'+sel+'>L'+(li+1)+' — '+esc(opt)+'</option>'; }).join('')+
+      '</select>';
+  } else {
+    cond += '<label class="text-xs font-semibold text-gray-400">Penjelasan kenapa kurang tepat</label>'+
+      '<textarea oninput="valNote('+i+',this.value)" rows="2" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 text-sm outline-none focus:border-brand" placeholder="Tuliskan koreksi / penjelasan...">'+esc(it.note||'')+'</textarea>';
+  }
+  cond += '</div></div>';
+  return head + cond;
+}
+function valStatus(i,status){
+  var it = VAL.state[i]; it.status = status;
+  var isBars = it.type==='bars';
+  var noLabel = isBars ? 'Tidak' : 'Kurang Tepat';
+  $('vok-'+i).className = 'px-4 py-1.5 rounded-lg text-sm font-semibold border '+(status==='Benar'?'bg-l5 text-ink border-l5':'bg-white text-gray-500 border-gray-200');
+  $('vno-'+i).className = 'px-4 py-1.5 rounded-lg text-sm font-semibold border '+(status===noLabel?'bg-l1 text-ink border-l1':'bg-white text-gray-500 border-gray-200');
+  var cond=$('vcond-'+i);
+  if(status===noLabel){ cond.classList.remove('hidden'); }
+  else { cond.classList.add('hidden'); if(isBars) it.level=''; else it.note=''; }
+}
+function valNote(i,v){ VAL.state[i].note=v; }
+function valLevel(i,v){ VAL.state[i].level=v; }
+function saveValidationNow(){
+  var validator = $('valValidator').value.trim();
+  if(!validator){ alert('Isi nama validator dulu.'); $('valValidator').focus(); return; }
+  if(!VAL.subject){ alert('Pilih subjek dulu.'); return; }
+  var bar = $('valSaveBar');
+  bar.innerHTML = '<div class="sticky bottom-4 mt-5 flex justify-end"><button disabled class="px-6 py-3 rounded-xl bg-gray-300 text-gray-600 font-bold">Menyimpan...</button></div>';
+  google.script.run.withSuccessHandler(function(res){
+    if(res && res._error){ alert('Gagal: '+res._error); renderValItems(); return; }
+    bar.innerHTML = '<div class="sticky bottom-4 mt-5 flex justify-end items-center gap-3">'+
+      '<span class="text-green-600 text-sm font-semibold">\u2713 Tersimpan ('+res.saved+' item)</span>'+
+      '<button onclick="saveValidationNow()" class="px-6 py-3 rounded-xl bg-brand hover:bg-brand-dark text-ink font-bold shadow-lg">Simpan Ulang</button></div>';
+    loadValidation();
+  }).withFailureHandler(function(e){ alert('Gagal: '+e.message); renderValItems(); }).saveValidation(VAL.kind, validator, VAL.subject, JSON.stringify(VAL.state));
 }
 </script>
 </body>

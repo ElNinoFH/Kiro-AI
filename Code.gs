@@ -723,3 +723,113 @@ function renameSheets() {
     Logger.log('Tidak ada sheet form yang ditemukan.');
   }
 }
+
+
+
+// =============================================================================
+//  VALIDASI (server-side)
+//  - getValidationPayload(kind): ambil jawaban subjek + validasi tersimpan
+//  - saveValidation(kind, validator, subject, itemsJson): simpan hasil validasi
+//  kind: 'karyawan' (divalidasi manager) atau 'manager' (divalidasi owner)
+// =============================================================================
+
+var VAL_HEADERS = ['Timestamp', 'Validator', 'Subjek', 'Pertanyaan', 'Tipe', 'Jawaban', 'Status', 'Koreksi BARS', 'Catatan'];
+
+function _valSheetName(kind) {
+  return (kind === 'manager') ? 'Hasil Validasi Manager' : 'Hasil Validasi Karyawan';
+}
+function _getOrCreateValSheet(ss, kind) {
+  var name = _valSheetName(kind);
+  var sh = ss.getSheetByName(name);
+  if (!sh) { sh = ss.insertSheet(name); sh.appendRow(VAL_HEADERS); }
+  else if (sh.getLastRow() === 0) { sh.appendRow(VAL_HEADERS); }
+  return sh;
+}
+
+function _findSourceSheet(ss, srcType) {
+  var sheets = ss.getSheets();
+  for (var i = 0; i < sheets.length; i++) {
+    var p = sheetRows_(sheets[i]);
+    var hj = p.headers.map(function (h) { return String(h).toLowerCase(); }).join('|||');
+    var t = null;
+    if (hj.indexOf('nama lengkap') >= 0 && hj.indexOf('atasan langsung') >= 0) { t = 'karyawan'; }
+    else if (hj.indexOf('divisi yang dipimpin') >= 0 && hj.indexOf('jumlah anggota tim') >= 0) { t = 'managerself'; }
+    if (t === srcType) { return { headers: p.headers, rows: p.rows }; }
+  }
+  return null;
+}
+
+function getValidationPayload(kind) {
+  try {
+    var ss = getSpreadsheet_();
+    var srcType = (kind === 'manager') ? 'managerself' : 'karyawan';
+    var src = _findSourceSheet(ss, srcType);
+    if (!src) { return { _error: 'Sheet sumber untuk validasi ' + kind + ' tidak ditemukan. Pastikan form mandiri sudah diisi.' }; }
+
+    var headers = src.headers;
+    var keyKw = (kind === 'manager') ? 'nama manager' : 'nama lengkap';
+    var divKw = (kind === 'manager') ? 'divisi yang dipimpin' : 'divisi';
+    var keyIdx = findCol_(headers, keyKw);
+    var divIdx = findCol_(headers, divKw);
+    var skip = (kind === 'manager')
+      ? ['timestamp', 'nama manager', 'divisi yang dipimpin', 'jumlah anggota tim']
+      : ['timestamp', 'nama lengkap', 'divisi', 'posisi', 'jabatan', 'atasan', 'lama bekerja'];
+    function isSkip(h) { var l = h.toLowerCase(); for (var s = 0; s < skip.length; s++) { if (l.indexOf(skip[s]) >= 0) { return true; } } return false; }
+
+    var subjects = [], dataMap = {};
+    src.rows.forEach(function (r) {
+      var nm = keyIdx >= 0 ? cellStr_(r[keyIdx]) : '';
+      if (!nm) { return; }
+      var items = [];
+      for (var c = 0; c < headers.length; c++) {
+        var h = String(headers[c]);
+        if (isSkip(h)) { continue; }
+        var type = 'text', comp = null, options = null;
+        var idx = h.toLowerCase().indexOf('untuk kompetensi');
+        if (idx >= 0) {
+          type = 'bars';
+          comp = h.substring(idx + 'untuk kompetensi'.length).replace(/\?\s*$/, '').trim();
+          options = barsLevelsFor(comp, 'other');
+        }
+        items.push({ q: h, a: cellStr_(r[c]), type: type, comp: comp, options: options });
+      }
+      subjects.push(nm);
+      dataMap[nm] = { division: divIdx >= 0 ? cellStr_(r[divIdx]) : '', items: items };
+    });
+
+    var valSheet = _getOrCreateValSheet(ss, kind);
+    var existing = {};
+    var vv = valSheet.getDataRange().getValues();
+    for (var v = 1; v < vv.length; v++) {
+      var subj = vv[v][2]; if (!subj) { continue; }
+      if (!existing[subj]) { existing[subj] = {}; }
+      existing[subj][vv[v][3]] = { status: vv[v][6], level: vv[v][7], note: vv[v][8] };
+    }
+    var done = subjects.filter(function (s) { return existing[s]; }).length;
+    return { kind: kind, subjects: subjects, data: dataMap, existing: existing, progress: { done: done, total: subjects.length } };
+  } catch (e) {
+    return { _error: e.message };
+  }
+}
+
+function saveValidation(kind, validator, subject, itemsJson) {
+  try {
+    var items = (typeof itemsJson === 'string') ? JSON.parse(itemsJson) : itemsJson;
+    var ss = getSpreadsheet_();
+    var sh = _getOrCreateValSheet(ss, kind);
+    var all = sh.getDataRange().getValues();
+    var kept = [VAL_HEADERS.slice()];
+    for (var i = 1; i < all.length; i++) {
+      if (String(all[i][2]) !== String(subject)) { kept.push(all[i]); }
+    }
+    var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    items.forEach(function (it) {
+      kept.push([ts, validator || '', subject, it.q || '', it.type || '', it.a || '', it.status || '', it.level || '', it.note || '']);
+    });
+    sh.clearContents();
+    sh.getRange(1, 1, kept.length, VAL_HEADERS.length).setValues(kept);
+    return { ok: true, saved: items.length };
+  } catch (e) {
+    return { _error: e.message };
+  }
+}
