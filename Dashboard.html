@@ -90,6 +90,7 @@
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="divisi" onclick="switchTab('divisi')">Divisi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="kompetensi" onclick="switchTab('kompetensi')">Kompetensi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="manager" onclick="switchTab('manager')">Manager</button>
+        <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="analysis" onclick="switchTab('analysis')">Analysis</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="validasi" onclick="switchTab('validasi')">Validasi</button>
         <button class="tab-btn relative px-2 py-5 text-gray-300 whitespace-nowrap" data-tab="data" onclick="switchTab('data')">Data Mentah</button>
       </div>
@@ -124,6 +125,7 @@
     <section id="tab-divisi" class="tab-panel hidden"></section>
     <section id="tab-kompetensi" class="tab-panel hidden"></section>
     <section id="tab-manager" class="tab-panel hidden"></section>
+    <section id="tab-analysis" class="tab-panel hidden"></section>
     <section id="tab-validasi" class="tab-panel hidden"></section>
     <section id="tab-data" class="tab-panel hidden"></section>
 
@@ -140,7 +142,7 @@ var CURRENT_TAB = 'overview';
 var charts = {};
 var TAB_TITLES = {
   overview:'Overview', karyawan:'Profil Karyawan', divisi:'Perbandingan Divisi',
-  kompetensi:'Heatmap Kompetensi', manager:'Asesmen Manager', validasi:'Validasi Data', data:'Data Mentah'
+  kompetensi:'Heatmap Kompetensi', manager:'Asesmen Manager', analysis:'Analisis Kelebihan & Kekurangan', validasi:'Validasi Data', data:'Data Mentah'
 };
 var LEVEL_COLORS = ['#FCA5A5','#FCD34D','#F0B429','#86EFAC','#22C55E'];
 var LEVEL_LABELS = ['Awal','Berkembang','Terstandar','Terukur','Unggul'];
@@ -260,6 +262,7 @@ function renderTab(t){
   else if(t==='divisi') renderDivisi();
   else if(t==='kompetensi') renderHeatmap();
   else if(t==='manager') renderManager();
+  else if(t==='analysis') renderAnalysis();
   else if(t==='validasi') renderValidasi();
   else if(t==='data') renderRaw();
 }
@@ -710,6 +713,108 @@ function renderRaw(){
   }).join('');
 }
 
+
+// ===================== TAB: ANALYSIS (Kelebihan & Kekurangan) =====================
+var ANALYSIS = null;
+
+function renderAnalysis(){
+  var p = $('tab-analysis');
+  p.innerHTML = '<div class="text-center py-16 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-3"></div><p>Memuat hasil analisis...</p></div>';
+  google.script.run.withSuccessHandler(onAnalysisData).withFailureHandler(function(e){
+    $('tab-analysis').innerHTML = emptyState('Gagal memuat analisis: '+esc(e&&e.message));
+  }).getAnalysisData(SESSION_TOKEN);
+}
+function onAnalysisData(d){
+  if(_handleAuth_(d)) return;
+  if(d && d._error){ $('tab-analysis').innerHTML = emptyState(d._error); return; }
+  ANALYSIS = d;
+  renderAnalysisView();
+}
+function analysisToolbar(){
+  var ai = ANALYSIS && ANALYSIS.aiActive;
+  var aiBadge = ai
+    ? '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-green-100 text-green-700">&#9679; AI aktif (Gemini)</span>'
+    : '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-amber-100 text-amber-700">&#9679; AI nonaktif &mdash; mode keyword. Set API key.</span>';
+  var last = (ANALYSIS && ANALYSIS.lastUpdated) ? 'Terakhir dianalisis: '+esc(ANALYSIS.lastUpdated) : 'Belum pernah dianalisis';
+  return '<div class="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3">'+
+    '<div><div class="flex items-center gap-2 flex-wrap">'+aiBadge+'<span class="text-xs text-gray-400 num">'+last+'</span></div>'+
+    '<p class="text-xs text-gray-500 mt-1">Kelebihan & kekurangan dihitung dari skor BARS tervalidasi, metrik (rework/OKR/lembur), penilaian manager, dan narasi deskriptif (NLP/AI).</p></div>'+
+    '<button id="runAnalysisBtn" onclick="runAnalysisNow()" class="px-5 py-2.5 rounded-xl bg-brand hover:bg-brand-dark text-ink font-bold shrink-0">&#9889; Jalankan Analisis AI</button>'+
+  '</div>';
+}
+function runAnalysisNow(){
+  var btn = $('runAnalysisBtn');
+  if(btn){ btn.disabled=true; btn.textContent='Menganalisis... (mungkin 1-2 menit)'; btn.classList.add('opacity-60'); }
+  google.script.run.withSuccessHandler(function(res){
+    if(_handleAuth_(res)) return;
+    if(res && res._error){ alert('Gagal: '+res._error); if(btn){btn.disabled=false; btn.innerHTML='&#9889; Jalankan Analisis AI'; btn.classList.remove('opacity-60');} return; }
+    renderAnalysis();
+  }).withFailureHandler(function(e){
+    alert('Gagal menjalankan analisis: '+(e&&e.message));
+    if(btn){ btn.disabled=false; btn.innerHTML='&#9889; Jalankan Analisis AI'; btn.classList.remove('opacity-60'); }
+  }).runAnalysis(SESSION_TOKEN);
+}
+function renderAnalysisView(){
+  var p = $('tab-analysis');
+  var subjects = (ANALYSIS.subjects||[]).filter(function(s){ return inFilter(s.division); });
+  var body;
+  if(!ANALYSIS.generated){
+    body = '<div class="card p-12 text-center fade-in">'+
+      '<div class="w-14 h-14 rounded-full border-4 border-brand/50 mx-auto mb-4 flex items-center justify-center text-2xl">&#129504;</div>'+
+      '<p class="font-bold text-lg mb-2">Belum ada hasil analisis</p>'+
+      '<p class="text-gray-500 text-sm max-w-md mx-auto mb-4">Klik <b>Jalankan Analisis AI</b> di atas untuk menghasilkan ringkasan kelebihan & kekurangan tiap karyawan dari seluruh data spreadsheet.</p>'+
+    '</div>';
+  } else if(!subjects.length){
+    body = emptyState('Belum ada hasil analisis'+(FILTER?' untuk divisi '+FILTER:'')+'. Coba jalankan ulang setelah ada data karyawan.');
+  } else {
+    body = '<div class="grid gap-5">'+ subjects.map(analysisCard).join('') +'</div>';
+  }
+  p.innerHTML = analysisToolbar() + body;
+}
+function confBadge(c){
+  var n = Number(c)||0; var pct = Math.round(n*100);
+  var color = n>=0.85 ? 'bg-green-100 text-green-700' : (n>=0.6 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500');
+  return '<span class="num text-[10px] font-semibold px-1.5 py-0.5 rounded '+color+'" title="Tingkat keyakinan sistem">'+pct+'%</span>';
+}
+function methodTag(m){
+  if(!m) return '';
+  var label = String(m);
+  var color = label.indexOf('AI')>=0 ? 'bg-blue-50 text-blue-600' : (label==='rule' ? 'bg-gray-100 text-gray-500' : 'bg-purple-50 text-purple-600');
+  var txt = label==='rule' ? 'data' : (label==='keyword' ? 'keyword' : label);
+  return '<span class="text-[10px] px-1.5 py-0.5 rounded '+color+'">'+esc(txt)+'</span>';
+}
+function findingRow(it, kind){
+  var border = kind==='plus' ? 'border-green-200' : 'border-rose-200';
+  var status = (String(it.status||'').indexOf('tinjau')>=0)
+    ? '<span class="text-[10px] text-amber-600 font-semibold">&#9888; perlu ditinjau</span>' : '';
+  return '<div class="rounded-lg border '+border+' p-3 bg-white">'+
+    '<div class="flex items-center justify-between gap-2 mb-1">'+
+      '<p class="font-semibold text-sm">'+esc(it.aspek||'-')+'</p>'+
+      '<div class="flex items-center gap-1.5 shrink-0">'+methodTag(it.metode)+confBadge(it.confidence)+'</div>'+
+    '</div>'+
+    '<p class="text-sm text-gray-700">'+esc(it.temuan||'-')+'</p>'+
+    (it.bukti?'<p class="text-xs text-gray-400 mt-1 italic">&ldquo;'+esc(it.bukti)+'&rdquo;</p>':'')+
+    '<div class="flex items-center justify-between mt-1.5"><span class="text-[10px] text-gray-400">'+esc(it.sumber||'')+'</span>'+status+'</div>'+
+  '</div>';
+}
+function analysisCard(s){
+  var plus = (s.kelebihan||[]);
+  var minus = (s.kekurangan||[]);
+  var plusHtml = plus.length ? plus.map(function(it){return findingRow(it,'plus');}).join('') : '<p class="text-sm text-gray-300">Belum ada kelebihan terdeteksi.</p>';
+  var minusHtml = minus.length ? minus.map(function(it){return findingRow(it,'minus');}).join('') : '<p class="text-sm text-gray-300">Tidak ada kekurangan menonjol.</p>';
+  return '<div class="card p-5 fade-in">'+
+    '<div class="flex items-center justify-between flex-wrap gap-2 mb-4 pb-3 border-b border-gray-100">'+
+      '<div><h3 class="text-lg font-extrabold">'+esc(s.name)+'</h3>'+
+        '<p class="text-xs text-gray-400">'+esc(s.division||'-')+' &middot; '+esc(s.tipe||'Karyawan')+'</p></div>'+
+      '<div class="flex gap-2 text-xs"><span class="px-2 py-1 rounded-md bg-green-50 text-green-700 font-semibold num">'+plus.length+' kelebihan</span>'+
+        '<span class="px-2 py-1 rounded-md bg-rose-50 text-rose-700 font-semibold num">'+minus.length+' kekurangan</span></div>'+
+    '</div>'+
+    '<div class="grid md:grid-cols-2 gap-4">'+
+      '<div><p class="text-xs font-bold text-green-600 uppercase tracking-wide mb-2">&#10003; Kelebihan</p><div class="space-y-2">'+plusHtml+'</div></div>'+
+      '<div><p class="text-xs font-bold text-rose-600 uppercase tracking-wide mb-2">&#9888; Kekurangan</p><div class="space-y-2">'+minusHtml+'</div></div>'+
+    '</div>'+
+  '</div>';
+}
 
 // ===================== TAB: VALIDASI =====================
 var VAL = { kind:'karyawan', payload:null, subject:'', state:[] };

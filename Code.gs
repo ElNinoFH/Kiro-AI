@@ -1080,3 +1080,444 @@ function refreshSession(token) {
   props.setProperty(PROP_SESSION_PFX + token, String(Date.now() + SESSION_TTL_MS));
   return { ok: true };
 }
+
+
+
+// =============================================================================
+//  ANALYSIS ENGINE (GOLD) — Kelebihan & Kekurangan Otomatis
+//  Arsitektur 3-layer hybrid + integrasi validasi yang sudah ada:
+//   LAYER 1 (Rule-based)  : data kuantitatif & terstruktur  -> akurasi ~100%
+//                           (skor BARS final/tervalidasi, rework, OKR, lembur,
+//                            beban kerja, rekomendasi)
+//   LAYER 2 (Keyword NLP) : kamus sentimen Bahasa Indonesia  -> sinyal cepat
+//   LAYER 3 (Gemini LLM)  : narasi deskriptif ambigu         -> pemahaman makna
+//                           (structured output + evidence grounding + few-shot
+//                            + grounding ke rubrik CMMI + self-consistency vote)
+//
+//  INTEGRASI VALIDASI:
+//   Sistem ini TIDAK membuat antrian validasi manusia baru. Sebagai gantinya,
+//   ia memakai hasil "Validasi" yang sudah ada (resolvedBars + barsSource)
+//   sebagai sumber kebenaran (ground truth). Temuan kompetensi yang berasal
+//   dari data tervalidasi otomatis mendapat confidence 1.0.
+//
+//  SETUP API KEY (jalankan 1x dari editor Apps Script):
+//   setupGeminiKey('PASTE_API_KEY_ANDA')
+//  Key disimpan di Script Properties (TIDAK ditulis ke kode / GitHub).
+// =============================================================================
+
+var PROP_GEMINI_KEY = 'GEMINI_API_KEY';
+var ANALYSIS_SHEET  = 'Analysis';
+var ANALYSIS_HEADERS = [
+  'Timestamp', 'Subjek', 'Tipe', 'Divisi', 'Kategori', 'Aspek',
+  'Temuan', 'Bukti', 'Sumber', 'Confidence', 'Metode', 'Status'
+];
+
+var ANALYSIS_CFG = {
+  model: 'gemini-2.0-flash',     // model Gemini (UrlFetchApp)
+  threshold: 0.85,               // >= terkonfirmasi, < perlu ditinjau
+  selfConsistencyRuns: 3,        // jumlah panggilan LLM untuk majority voting
+  temperature: 0.2,              // rendah = lebih deterministik
+  // ambang kuantitatif
+  reworkLow: 10, reworkHigh: 25, // % rework
+  overtimeHigh: 40,              // jam lembur per periode
+  okrLow: 60, okrHigh: 90        // % capaian OKR
+};
+
+// ---- Setup & ambil API key (aman, lewat Script Properties) -------------------
+function setupGeminiKey(key) {
+  if (!key || String(key).trim().length < 10) {
+    Logger.log('ERROR: key tidak valid. Pakai: setupGeminiKey("API_KEY_ANDA")');
+    return;
+  }
+  PropertiesService.getScriptProperties().setProperty(PROP_GEMINI_KEY, String(key).trim());
+  Logger.log('Gemini API key tersimpan di Script Properties. Aman.');
+}
+function _getGeminiKey_() {
+  return PropertiesService.getScriptProperties().getProperty(PROP_GEMINI_KEY) || '';
+}
+
+// ---- Util numerik server-side ----------------------------------------------
+function firstNum_(s) {
+  var m = String(s == null ? '' : s).replace(',', '.').match(/-?\d+(\.\d+)?/);
+  return m ? parseFloat(m[0]) : null;
+}
+
+// ---- Pembuat objek temuan ---------------------------------------------------
+function _mkFinding_(kategori, aspek, temuan, bukti, sumber, confidence, metode) {
+  return {
+    kategori: kategori, aspek: aspek, temuan: temuan, bukti: bukti || '',
+    sumber: sumber || '', confidence: Math.round(confidence * 100) / 100,
+    metode: metode || 'rule'
+  };
+}
+
+// =============================================================================
+//  LAYER 1 — RULE-BASED (kuantitatif & terstruktur). Akurasi ~100%.
+//  Memakai resolvedBars (hasil validasi) bila ada -> confidence 1.0.
+// =============================================================================
+function _analyzeQuant_(e, managerEval) {
+  var f = [];
+  var src = e.barsSource || {};
+
+  // 1) Kompetensi (BARS) — pakai skor final (resolvedBars) hasil validasi
+  (VALUES || []).forEach(function (comp) {
+    var lvl = (e.resolvedBars && e.resolvedBars[comp]) || e.bars[comp] || null;
+    if (!lvl) { return; }
+    var validated = src[comp] === 'validasi';
+    var crossref  = src[comp] === 'crossref';
+    var conf = validated ? 1.0 : (crossref ? 0.92 : 0.85);
+    var sumber = validated ? 'BARS (tervalidasi)' : (crossref ? 'BARS (cross-ref manager)' : 'BARS (penilaian diri)');
+    if (lvl >= 4) {
+      f.push(_mkFinding_('kelebihan', comp, 'Kompeten tinggi pada ' + comp + ' (Level ' + lvl + '/5)', 'Level ' + lvl, sumber, conf, 'rule'));
+    } else if (lvl <= 2) {
+      f.push(_mkFinding_('kekurangan', comp, 'Perlu pengembangan pada ' + comp + ' (Level ' + lvl + '/5)', 'Level ' + lvl, sumber, conf, 'rule'));
+    }
+  });
+
+  // 2) Rework
+  var rw = firstNum_(e.rework);
+  if (rw != null) {
+    if (rw <= ANALYSIS_CFG.reworkLow) {
+      f.push(_mkFinding_('kelebihan', 'Kualitas Output', 'Tingkat rework rendah (' + rw + '%), output rapi sejak awal', rw + '%', 'Metrik kuantitatif', 1.0, 'rule'));
+    } else if (rw >= ANALYSIS_CFG.reworkHigh) {
+      f.push(_mkFinding_('kekurangan', 'Kualitas Output', 'Tingkat rework tinggi (' + rw + '%), banyak revisi ulang', rw + '%', 'Metrik kuantitatif', 1.0, 'rule'));
+    }
+  }
+
+  // 3) OKR capaian
+  var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
+  if (t && a != null) {
+    var pct = Math.round(a / t * 100);
+    if (pct >= ANALYSIS_CFG.okrHigh) {
+      f.push(_mkFinding_('kelebihan', 'Pencapaian Target', 'Capaian OKR sangat baik (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR', 1.0, 'rule'));
+    } else if (pct < ANALYSIS_CFG.okrLow) {
+      f.push(_mkFinding_('kekurangan', 'Pencapaian Target', 'Capaian OKR di bawah ekspektasi (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR', 1.0, 'rule'));
+    }
+  }
+
+  // 4) Lembur
+  var ot = firstNum_(e.overtime);
+  if (ot != null && ot >= ANALYSIS_CFG.overtimeHigh) {
+    f.push(_mkFinding_('kekurangan', 'Beban Kerja', 'Jam lembur tinggi (' + ot + ' jam) — indikasi overload / inefisiensi', ot + ' jam', 'Metrik kuantitatif', 0.9, 'rule'));
+  }
+
+  // 5) Penilaian beban kerja & rekomendasi dari manager (terstruktur)
+  var mr = null;
+  (managerEval || []).forEach(function (m) {
+    if (norm_(m.employee) === norm_(e.name)) { mr = m; }
+  });
+  if (mr) {
+    var wl = norm_(mr.workloadRating);
+    if (wl.indexOf('overload') >= 0 || wl.indexOf('sangat berat') >= 0) {
+      f.push(_mkFinding_('kekurangan', 'Beban Kerja', 'Manager menilai beban kerja "Sangat berat (overload)"', mr.workloadRating, 'Penilaian manager', 0.95, 'rule'));
+    } else if (wl.indexOf('pas') >= 0 || wl.indexOf('seimbang') >= 0) {
+      f.push(_mkFinding_('kelebihan', 'Manajemen Beban Kerja', 'Beban kerja dinilai pas/seimbang oleh manager', mr.workloadRating, 'Penilaian manager', 0.9, 'rule'));
+    }
+    var rec = norm_(mr.recommendation);
+    if (rec.indexOf('promosi') >= 0) {
+      f.push(_mkFinding_('kelebihan', 'Rekomendasi', 'Direkomendasikan untuk promosi oleh manager', mr.recommendation, 'Rekomendasi manager', 1.0, 'rule'));
+    } else if (rec.indexOf('pertahankan') >= 0) {
+      f.push(_mkFinding_('kelebihan', 'Rekomendasi', 'Direkomendasikan dipertahankan pada posisi', mr.recommendation, 'Rekomendasi manager', 0.95, 'rule'));
+    } else if (rec.indexOf('pengembangan') >= 0 || rec.indexOf('pelatihan') >= 0) {
+      f.push(_mkFinding_('kekurangan', 'Rekomendasi', 'Manager merekomendasikan pengembangan / pelatihan', mr.recommendation, 'Rekomendasi manager', 0.9, 'rule'));
+    }
+  }
+
+  // 6) Gap penilaian diri vs hasil akhir (over/under estimate)
+  (VALUES || []).forEach(function (comp) {
+    var self = e.bars[comp] || null;
+    var fin = (e.resolvedBars && e.resolvedBars[comp]) || null;
+    if (self != null && fin != null && self - fin >= 2) {
+      f.push(_mkFinding_('kekurangan', 'Akurasi Penilaian Diri', 'Menilai diri lebih tinggi dari hasil validasi pada ' + comp + ' (diri L' + self + ' vs final L' + fin + ')', 'gap +' + (self - fin), 'Gap analysis', 0.88, 'rule'));
+    }
+  });
+
+  return f;
+}
+
+// =============================================================================
+//  LAYER 2 — KEYWORD NLP (kamus sentimen Bahasa Indonesia)
+//  Dipakai sebagai: (a) fallback bila Gemini tidak tersedia,
+//                    (b) penguat confidence (ensemble) bila sepakat dgn LLM.
+// =============================================================================
+var POS_WORDS = ['proaktif', 'inisiatif', 'inovatif', 'inovasi', 'mandiri', 'konsisten', 'cepat', 'efisien', 'efektif', 'membantu', 'memimpin', 'solutif', 'solusi', 'teliti', 'disiplin', 'berkembang', 'belajar', 'antisipasi', 'mengusulkan', 'memperbaiki', 'rapi', 'tepat waktu', 'kolaboratif', 'tanggung jawab'];
+var NEG_WORDS = ['sulit', 'kesulitan', 'terlambat', 'tertunda', 'menunda', 'bingung', 'kurang', 'lambat', 'menunggu', 'bergantung', 'ketergantungan', 'revisi', 'error', 'kesalahan', 'overload', 'belum', 'tidak bisa', 'tidak mampu', 'hambatan', 'kendala', 'terhambat', 'meleset', 'gagal', 'lembur', 'sendiri agar', 'kewalahan'];
+
+function _keywordSentiment_(text) {
+  var t = norm_(text);
+  if (!t) { return { score: 0, pos: 0, neg: 0 }; }
+  var pos = 0, neg = 0;
+  POS_WORDS.forEach(function (w) { if (t.indexOf(w) >= 0) { pos++; } });
+  NEG_WORDS.forEach(function (w) { if (t.indexOf(w) >= 0) { neg++; } });
+  return { score: pos - neg, pos: pos, neg: neg };
+}
+
+// Field naratif deskriptif yang relevan untuk analisis makna.
+function _narrativeFields_(e) {
+  var raw = [
+    { key: 'Hambatan / tugas lebih lama', a: e.obstacles },
+    { key: 'Usulan penyederhanaan proses', a: e.simplify },
+    { key: 'Area yang ingin dikembangkan', a: e.develop },
+    { key: 'Penyebab selisih target OKR', a: e.okrCause },
+    { key: 'Ketergantungan pada pihak lain', a: e.dependency },
+    { key: 'Kualitas data/brief yang diterima', a: e.material },
+    { key: 'Pekerjaan paling memakan waktu', a: e.mostTime },
+    { key: 'Tugas tambahan di luar job desc', a: e.extraTasks }
+  ];
+  return raw.filter(function (x) { return x.a && String(x.a).trim().length > 8; });
+}
+
+function _keywordFallback_(fields) {
+  var f = [];
+  fields.forEach(function (fl) {
+    var s = _keywordSentiment_(fl.a);
+    if (s.score >= 1) {
+      f.push(_mkFinding_('kelebihan', fl.key, String(fl.a).slice(0, 140), String(fl.a).slice(0, 80), 'Narasi (keyword)', 0.55, 'keyword'));
+    } else if (s.score <= -1) {
+      f.push(_mkFinding_('kekurangan', fl.key, String(fl.a).slice(0, 140), String(fl.a).slice(0, 80), 'Narasi (keyword)', 0.55, 'keyword'));
+    }
+  });
+  return f;
+}
+
+// =============================================================================
+//  LAYER 3 — GEMINI LLM (structured output + grounding + self-consistency)
+// =============================================================================
+
+// Few-shot khas konteks URALA (agensi kreatif: Creative / Digital / PR).
+var ANALYSIS_FEWSHOT = [
+  { teks: 'Saya aktif mengusulkan workflow baru di Notion supaya brief desain tidak bolak-balik revisi.', aspek: 'Inisiatif & Inovasi Proses', kategori: 'kelebihan' },
+  { teks: 'Pekerjaan sering tertunda karena harus menunggu approval konten dari divisi lain.', aspek: 'Ketergantungan Lintas Tim', kategori: 'kekurangan' },
+  { teks: 'Saya cenderung mengerjakan semua sendiri agar lebih tenang dan hasilnya sesuai.', aspek: 'Delegasi', kategori: 'kekurangan' },
+  { teks: 'Brief dari klien biasanya lengkap jadi saya bisa langsung eksekusi tanpa banyak klarifikasi.', aspek: 'Kualitas Input Kerja', kategori: 'kelebihan' },
+  { teks: 'Saya ingin belajar copywriting agar bisa bantu tim PR saat sedang padat.', aspek: 'Growth Mindset', kategori: 'kelebihan' }
+];
+
+function _buildAnalysisPrompt_(subjectName, division, fields) {
+  var rubrik = '';
+  (VALUES || []).forEach(function (comp) {
+    var lv = COMPETENCY_BARS[comp];
+    if (lv) { rubrik += '- ' + comp + ': L1=' + lv[0] + ' | L3=' + lv[2] + ' | L5=' + lv[4] + '\n'; }
+  });
+
+  var fewshot = ANALYSIS_FEWSHOT.map(function (x) {
+    return '  {"teks":"' + x.teks.replace(/"/g, "'") + '","aspek":"' + x.aspek + '","kategori":"' + x.kategori + '"}';
+  }).join(',\n');
+
+  var inputJson = fields.map(function (fl, i) {
+    return '  {"id":' + i + ',"pertanyaan":"' + String(fl.key).replace(/"/g, "'") + '","jawaban":"' + String(fl.a).replace(/"/g, "'").replace(/\n/g, ' ') + '"}';
+  }).join(',\n');
+
+  return [
+    'Anda adalah analis SDM senior di URALA (agensi kreatif, divisi Creative/Digital/PR).',
+    'Nilai perusahaan: Agility, Growth Mindset, Problem Solver.',
+    'TUGAS: Klasifikasikan tiap jawaban naratif karyawan menjadi "kelebihan", "kekurangan", atau "netral".',
+    'ATURAN PENTING:',
+    '1. WAJIB mengutip frasa/kata persis dari jawaban sebagai "bukti". Jika tidak ada bukti tekstual, beri kategori "netral".',
+    '2. Bedakan keluhan SISTEM (mis. menunggu approval pihak lain) dari KEKURANGAN PRIBADI karyawan. Keluhan sistem yang di luar kendali karyawan = "netral" (catat aspek tapi jangan jadikan kekurangan pribadi).',
+    '3. Pahami nuansa: "lembur demi menyempurnakan" bisa berarti dedikasi (kelebihan) ATAU inefisiensi (kekurangan) — putuskan dari konteks dan turunkan confidence bila ambigu.',
+    '4. "confidence" antara 0 dan 1 (0.9+ hanya bila sangat jelas).',
+    '5. Selaraskan aspek dengan rubrik kompetensi bila relevan.',
+    '',
+    'RUBRIK KOMPETENSI (acuan makna level):',
+    rubrik,
+    'CONTOH KLASIFIKASI (few-shot):',
+    '[\n' + fewshot + '\n]',
+    '',
+    'DATA KARYAWAN: ' + subjectName + ' (Divisi ' + division + ')',
+    'JAWABAN NARATIF:',
+    '[\n' + inputJson + '\n]',
+    '',
+    'KELUARKAN HANYA JSON array (tanpa teks lain), format tiap elemen:',
+    '{"kategori":"kelebihan|kekurangan|netral","aspek":"<frasa singkat>","temuan":"<ringkasan 1 kalimat>","bukti":"<kutipan dari jawaban>","confidence":<0..1>}'
+  ].join('\n');
+}
+
+function _callGemini_(prompt) {
+  var key = _getGeminiKey_();
+  if (!key) { return null; }
+  var base = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
+  var url = base, headers = {};
+  // Key AI Studio (AIza...) -> query param. Selain itu -> OAuth Bearer token.
+  if (key.indexOf('AIza') === 0) { url = base + '?key=' + encodeURIComponent(key); }
+  else { headers['Authorization'] = 'Bearer ' + key; }
+
+  var payload = {
+    contents: [{ role: 'user', parts: [{ text: prompt }] }],
+    generationConfig: { temperature: ANALYSIS_CFG.temperature, responseMimeType: 'application/json' }
+  };
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json', headers: headers,
+      payload: JSON.stringify(payload), muteHttpExceptions: true
+    });
+    var code = res.getResponseCode();
+    if (code !== 200) { Logger.log('Gemini HTTP ' + code + ': ' + res.getContentText().slice(0, 300)); return null; }
+    var json = JSON.parse(res.getContentText());
+    var cand = json.candidates && json.candidates[0];
+    if (!cand || !cand.content || !cand.content.parts || !cand.content.parts[0]) { return null; }
+    return cand.content.parts[0].text;
+  } catch (e) {
+    Logger.log('Gemini error: ' + e.message);
+    return null;
+  }
+}
+
+function _parseGeminiJson_(text) {
+  if (!text) { return null; }
+  var t = String(text).trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+  try {
+    var arr = JSON.parse(t);
+    return Array.isArray(arr) ? arr : null;
+  } catch (e) {
+    // coba ambil array pertama
+    var m = t.match(/\[[\s\S]*\]/);
+    if (m) { try { return JSON.parse(m[0]); } catch (e2) { return null; } }
+    return null;
+  }
+}
+
+// Self-consistency: jalankan N kali, lalu majority voting per (aspek+kategori).
+function _mergeRuns_(runs) {
+  var bucket = {};
+  var totalRuns = runs.length;
+  runs.forEach(function (arr) {
+    (arr || []).forEach(function (it) {
+      if (!it || !it.kategori) { return; }
+      var kat = norm_(it.kategori);
+      if (kat === 'netral') { return; }
+      var aspek = it.aspek || '(umum)';
+      var k = norm_(aspek) + '|' + kat;
+      if (!bucket[k]) { bucket[k] = { kategori: kat, aspek: aspek, temuan: it.temuan || '', bukti: it.bukti || '', confSum: 0, count: 0 }; }
+      bucket[k].count++;
+      bucket[k].confSum += (typeof it.confidence === 'number' ? it.confidence : 0.7);
+      if ((it.temuan || '').length > bucket[k].temuan.length) { bucket[k].temuan = it.temuan; }
+      if ((it.bukti || '').length > bucket[k].bukti.length) { bucket[k].bukti = it.bukti; }
+    });
+  });
+  var out = [];
+  Object.keys(bucket).forEach(function (k) {
+    var b = bucket[k];
+    var agreement = b.count / totalRuns;          // konsistensi antar-run
+    var modelConf = b.confSum / b.count;           // rata-rata confidence model
+    var conf = Math.round(agreement * modelConf * 100) / 100;
+    out.push(_mkFinding_(b.kategori, b.aspek, b.temuan, b.bukti, 'Narasi (AI)', conf, 'AI'));
+  });
+  return out;
+}
+
+function _analyzeNarrative_(name, division, fields) {
+  if (!fields.length) { return []; }
+  var key = _getGeminiKey_();
+  if (!key) { return _keywordFallback_(fields); }  // fallback bila key belum diset
+
+  var prompt = _buildAnalysisPrompt_(name, division, fields);
+  var runs = [];
+  for (var i = 0; i < ANALYSIS_CFG.selfConsistencyRuns; i++) {
+    var txt = _callGemini_(prompt);
+    var parsed = _parseGeminiJson_(txt);
+    if (parsed) { runs.push(parsed); }
+  }
+  if (!runs.length) { return _keywordFallback_(fields); }  // fallback bila API gagal
+
+  var aiFindings = _mergeRuns_(runs);
+
+  // ENSEMBLE: bila keyword sentiment sepakat arah dgn temuan AI -> +0.08 confidence.
+  aiFindings.forEach(function (f) {
+    var s = _keywordSentiment_(f.bukti + ' ' + f.temuan);
+    if ((f.kategori === 'kelebihan' && s.score >= 1) || (f.kategori === 'kekurangan' && s.score <= -1)) {
+      f.confidence = Math.min(1.0, Math.round((f.confidence + 0.08) * 100) / 100);
+      f.metode = 'AI+keyword';
+    }
+  });
+  return aiFindings;
+}
+
+// Hilangkan temuan duplikat (aspek+kategori), simpan confidence tertinggi.
+function _dedupFindings_(arr) {
+  var seen = {}, out = [];
+  arr.forEach(function (f) {
+    var k = norm_(f.aspek) + '|' + norm_(f.kategori);
+    if (seen[k] === undefined) { seen[k] = out.length; out.push(f); }
+    else if (f.confidence > out[seen[k]].confidence) { out[seen[k]] = f; }
+  });
+  // urutkan: kelebihan dulu, lalu confidence desc
+  out.sort(function (a, b) {
+    if (a.kategori !== b.kategori) { return a.kategori === 'kelebihan' ? -1 : 1; }
+    return b.confidence - a.confidence;
+  });
+  return out;
+}
+
+// =============================================================================
+//  ORKESTRATOR — runAnalysis() menulis ke sheet "Analysis"
+//  getAnalysisData() membaca sheet untuk dashboard (cepat, tanpa panggil API).
+// =============================================================================
+function runAnalysis(token) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
+  try {
+    var data = _buildDashboardData();
+    if (data._error) { return { _error: data._error }; }
+    var ss = getSpreadsheet_();
+    var sh = ss.getSheetByName(ANALYSIS_SHEET) || ss.insertSheet(ANALYSIS_SHEET);
+    sh.clearContents();
+    sh.getRange(1, 1, 1, ANALYSIS_HEADERS.length).setValues([ANALYSIS_HEADERS]);
+
+    var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    var rows = [];
+    var subjects = 0;
+
+    (data.employees || []).forEach(function (e) {
+      if (!e.name) { return; }
+      subjects++;
+      var findings = _analyzeQuant_(e, data.managerEval)
+        .concat(_analyzeNarrative_(e.name, e.division, _narrativeFields_(e)));
+      findings = _dedupFindings_(findings);
+      findings.forEach(function (f) {
+        var status = f.confidence >= ANALYSIS_CFG.threshold ? 'Terkonfirmasi' : 'Perlu ditinjau';
+        rows.push([ts, e.name, 'Karyawan', e.division || '', f.kategori, f.aspek, f.temuan, f.bukti, f.sumber, f.confidence, f.metode, status]);
+      });
+    });
+
+    if (rows.length) {
+      sh.getRange(2, 1, rows.length, ANALYSIS_HEADERS.length).setValues(rows);
+    }
+    return { ok: true, subjects: subjects, findings: rows.length, lastUpdated: ts, aiActive: !!_getGeminiKey_() };
+  } catch (e) {
+    return { _error: e.message };
+  }
+}
+
+function getAnalysisData(token) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
+  try {
+    var ss = getSpreadsheet_();
+    var sh = ss.getSheetByName(ANALYSIS_SHEET);
+    if (!sh || sh.getLastRow() < 2) {
+      return { generated: false, aiActive: !!_getGeminiKey_(), subjects: [] };
+    }
+    var vv = sh.getDataRange().getValues();
+    var bySubj = {};
+    var lastUpdated = '';
+    for (var i = 1; i < vv.length; i++) {
+      var r = vv[i];
+      var name = r[1]; if (!name) { continue; }
+      lastUpdated = r[0] || lastUpdated;
+      if (!bySubj[name]) {
+        bySubj[name] = { name: name, tipe: r[2], division: r[3], kelebihan: [], kekurangan: [] };
+      }
+      var item = {
+        aspek: r[5], temuan: r[6], bukti: r[7], sumber: r[8],
+        confidence: r[9], metode: r[10], status: r[11]
+      };
+      if (String(r[4]).toLowerCase().indexOf('lebih') >= 0) { bySubj[name].kelebihan.push(item); }
+      else { bySubj[name].kekurangan.push(item); }
+    }
+    return {
+      generated: true, aiActive: !!_getGeminiKey_(), lastUpdated: lastUpdated,
+      subjects: Object.keys(bySubj).map(function (k) { return bySubj[k]; })
+    };
+  } catch (e) {
+    return { _error: e.message };
+  }
+}
