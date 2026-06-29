@@ -700,7 +700,10 @@ function renderValidasi(){
     '</div>'+
     '<div class="card p-5 mb-4 grid md:grid-cols-3 gap-4 items-end">'+
       '<div><label class="text-xs font-semibold text-gray-400">NAMA VALIDATOR ('+esc(valLabel)+')</label>'+
-        '<input id="valValidator" placeholder="Nama Anda" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand"></div>'+
+        (VAL.kind==='manager'
+          ? '<div class="mt-1 px-3 py-2 rounded-lg bg-surface border border-gray-200 text-sm font-bold text-ink">Rian Mohamad Yusuf <span class="text-xs font-normal text-gray-400">(owner — tidak dapat diubah)</span></div>'
+          : '<input id="valValidator" placeholder="Nama Anda" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand">')+
+      '</div>'+
       '<div><label class="text-xs font-semibold text-gray-400">PILIH '+esc(subjLabel).toUpperCase()+'</label>'+
         '<select id="valSubject" onchange="onValSubject()" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand"><option value="">Memuat...</option></select></div>'+
       '<div><label class="text-xs font-semibold text-gray-400">PROGRESS</label><div id="valProgress" class="mt-1 text-sm text-gray-500">-</div></div>'+
@@ -796,8 +799,14 @@ function valStatus(i,status){
 function valNote(i,v){ VAL.state[i].note=v; }
 function valLevel(i,v){ VAL.state[i].level=v; }
 function saveValidationNow(){
-  var validator = $('valValidator').value.trim();
-  if(!validator){ alert('Isi nama validator dulu.'); $('valValidator').focus(); return; }
+  var validator;
+  if(VAL.kind==='manager'){
+    validator = 'Rian Mohamad Yusuf';
+  } else {
+    var inp = $('valValidator');
+    validator = inp ? inp.value.trim() : '';
+    if(!validator){ alert('Isi nama validator dulu.'); if(inp) inp.focus(); return; }
+  }
   if(!VAL.subject){ alert('Pilih subjek dulu.'); return; }
   var bar = $('valSaveBar');
   bar.innerHTML = '<div class="sticky bottom-4 mt-5 flex justify-end"><button disabled class="px-6 py-3 rounded-xl bg-gray-300 text-gray-600 font-bold">Menyimpan...</button></div>';
