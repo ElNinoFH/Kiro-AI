@@ -1142,6 +1142,16 @@ function firstNum_(s) {
   return m ? parseFloat(m[0]) : null;
 }
 
+// Konversi nilai sel apa pun -> string aman (hindari Date/obj merusak serialisasi
+// google.script.run yang membuat success handler tidak pernah terpanggil).
+function _toStr_(c) {
+  if (c == null) { return ''; }
+  if (c instanceof Date) {
+    return Utilities.formatDate(c, Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm');
+  }
+  return String(c).trim();
+}
+
 // ---- Pembuat objek temuan ---------------------------------------------------
 function _mkFinding_(kategori, aspek, temuan, bukti, sumber, confidence, metode) {
   return {
@@ -1498,26 +1508,30 @@ function getAnalysisData(token) {
     }
     var vv = sh.getDataRange().getValues();
     var bySubj = {};
+    var order = [];
     var lastUpdated = '';
     for (var i = 1; i < vv.length; i++) {
       var r = vv[i];
-      var name = r[1]; if (!name) { continue; }
-      lastUpdated = r[0] || lastUpdated;
+      var name = (r[1] == null) ? '' : String(r[1]).trim();
+      if (!name) { continue; }
+      var ts = _toStr_(r[0]); if (ts) { lastUpdated = ts; }
       if (!bySubj[name]) {
-        bySubj[name] = { name: name, tipe: r[2], division: r[3], kelebihan: [], kekurangan: [] };
+        bySubj[name] = { name: name, tipe: _toStr_(r[2]), division: _toStr_(r[3]), kelebihan: [], kekurangan: [] };
+        order.push(name);
       }
+      var conf = Number(r[9]); if (!isFinite(conf)) { conf = 0; }
       var item = {
-        aspek: r[5], temuan: r[6], bukti: r[7], sumber: r[8],
-        confidence: r[9], metode: r[10], status: r[11]
+        aspek: _toStr_(r[5]), temuan: _toStr_(r[6]), bukti: _toStr_(r[7]),
+        sumber: _toStr_(r[8]), confidence: conf, metode: _toStr_(r[10]), status: _toStr_(r[11])
       };
       if (String(r[4]).toLowerCase().indexOf('lebih') >= 0) { bySubj[name].kelebihan.push(item); }
       else { bySubj[name].kekurangan.push(item); }
     }
     return {
-      generated: true, aiActive: !!_getGeminiKey_(), lastUpdated: lastUpdated,
-      subjects: Object.keys(bySubj).map(function (k) { return bySubj[k]; })
+      generated: true, aiActive: !!_getGeminiKey_(), lastUpdated: String(lastUpdated || ''),
+      subjects: order.map(function (k) { return bySubj[k]; })
     };
   } catch (e) {
-    return { _error: e.message };
+    return { _error: String(e && e.message || e) };
   }
 }

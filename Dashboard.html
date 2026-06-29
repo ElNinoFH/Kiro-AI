@@ -716,19 +716,31 @@ function renderRaw(){
 
 // ===================== TAB: ANALYSIS (Kelebihan & Kekurangan) =====================
 var ANALYSIS = null;
+var ANALYSIS_REQ = 0;
 
 function renderAnalysis(){
   var p = $('tab-analysis');
+  var reqId = ++ANALYSIS_REQ;
   p.innerHTML = '<div class="text-center py-16 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-3"></div><p>Memuat hasil analisis...</p></div>';
+  // Watchdog: jika 30 detik tidak ada respons (mis. Web App belum di-deploy ulang), hentikan spinner.
+  setTimeout(function(){
+    if(reqId===ANALYSIS_REQ && p.querySelector('.animate-spin')){
+      p.innerHTML = emptyState('Analisis terlalu lama memuat. Kemungkinan Web App belum di-deploy ulang dengan Code.gs terbaru. Buka Apps Script > Deploy > Manage deployments > Edit > Version: New version > Deploy, lalu buka URL Web App lagi.');
+    }
+  }, 30000);
   google.script.run.withSuccessHandler(onAnalysisData).withFailureHandler(function(e){
     $('tab-analysis').innerHTML = emptyState('Gagal memuat analisis: '+esc(e&&e.message));
   }).getAnalysisData(SESSION_TOKEN);
 }
 function onAnalysisData(d){
   if(_handleAuth_(d)) return;
-  if(d && d._error){ $('tab-analysis').innerHTML = emptyState(d._error); return; }
-  ANALYSIS = d;
-  renderAnalysisView();
+  try {
+    if(d && d._error){ $('tab-analysis').innerHTML = emptyState(d._error); return; }
+    ANALYSIS = d || { generated:false, subjects:[] };
+    renderAnalysisView();
+  } catch(err){
+    $('tab-analysis').innerHTML = emptyState('Gagal menampilkan analisis: '+esc(err && err.message));
+  }
 }
 function analysisToolbar(){
   var ai = ANALYSIS && ANALYSIS.aiActive;
