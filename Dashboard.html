@@ -98,6 +98,7 @@
           <option value="">Semua Divisi</option>
         </select>
         <button onclick="loadData()" title="Refresh" class="px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700">&#8635;</button>
+        <button onclick="logout()" title="Keluar" class="px-3 py-2 rounded-lg bg-gray-800 hover:bg-red-900 border border-gray-700 text-gray-400 hover:text-red-300 text-xs">Keluar</button>
       </div>
     </div>
   </nav>
@@ -131,7 +132,8 @@
 
 <script>
 // ===================== CONFIG & STATE =====================
-var PASSWORD = 'uralakreatif';
+var PASSWORD = '';          // Password TIDAK disimpan di client — verifikasi di server
+var SESSION_TOKEN = '';     // UUID dari server, disimpan di sessionStorage
 var DATA = null;
 var FILTER = '';
 var CURRENT_TAB = 'overview';
@@ -149,20 +151,46 @@ function firstNum(s){ var m=String(s==null?'':s).replace(',','.').match(/-?\d+(\
 
 // ===================== LOGIN =====================
 function doLogin(){
-  if($('pw').value === PASSWORD){
-    sessionStorage.setItem('urala_auth','1');
-    showApp();
-  } else {
-    $('pwErr').textContent = 'Kata sandi salah. Coba lagi.';
-    $('pw').value=''; $('pw').focus();
-  }
+  var pw = $('pw').value;
+  if(!pw){ $('pwErr').textContent='Masukkan kata sandi.'; return; }
+  $('pwErr').textContent='';
+  var btn = document.querySelector('#login button');
+  btn.disabled = true; btn.textContent = 'Memeriksa...';
+  google.script.run
+    .withSuccessHandler(function(res){
+      btn.disabled=false; btn.textContent='Masuk';
+      if(res && res.ok){
+        SESSION_TOKEN = res.token;
+        sessionStorage.setItem('urala_token', res.token);
+        showApp();
+      } else {
+        $('pwErr').textContent='Kata sandi salah. Coba lagi.';
+        $('pw').value=''; $('pw').focus();
+      }
+    })
+    .withFailureHandler(function(){
+      btn.disabled=false; btn.textContent='Masuk';
+      $('pwErr').textContent='Gagal terhubung ke server. Coba refresh halaman.';
+    })
+    .verifyLogin(pw);
 }
 function showApp(){
   $('login').classList.add('hidden');
   $('app').classList.remove('hidden');
   loadData();
 }
-if(sessionStorage.getItem('urala_auth')==='1'){ window.addEventListener('DOMContentLoaded', showApp); }
+function logout(){
+  SESSION_TOKEN = '';
+  sessionStorage.removeItem('urala_token');
+  $('app').classList.add('hidden');
+  $('login').classList.remove('hidden');
+  $('pw').value=''; $('pwErr').textContent='';
+}
+// Pulihkan sesi jika token masih tersimpan di sessionStorage
+window.addEventListener('DOMContentLoaded', function(){
+  var saved = sessionStorage.getItem('urala_token');
+  if(saved){ SESSION_TOKEN = saved; showApp(); }
+});
 
 
 // ===================== DATA LOADING =====================
@@ -170,7 +198,7 @@ function loadData(){
   $('loading').classList.remove('hidden');
   document.querySelectorAll('.tab-panel').forEach(function(p){ p.innerHTML=''; });
   if (typeof google !== 'undefined' && google.script && google.script.run){
-    google.script.run.withSuccessHandler(onData).withFailureHandler(onErr).getDashboardData();
+    google.script.run.withSuccessHandler(onData).withFailureHandler(onErr).getDashboardData(SESSION_TOKEN);
   } else {
     onErr({message:'google.script.run tidak tersedia. Buka lewat URL Web App, bukan preview HTML.'});
   }
@@ -179,7 +207,9 @@ function onErr(e){
   $('loading').classList.add('hidden');
   $('tab-'+CURRENT_TAB).innerHTML = '<div class="card p-10 text-center text-gray-500">Gagal memuat data.<br><span class="text-xs">'+esc(e&&e.message)+'</span></div>';
 }
+function _handleAuth_(d){ if(d&&d._auth){ SESSION_TOKEN=''; sessionStorage.removeItem('urala_token'); logout(); return true; } return false; }
 function onData(d){
+  if(_handleAuth_(d)) return;
   if (d && d._error) {
     $('loading').classList.add('hidden');
     $('tab-'+CURRENT_TAB).innerHTML =
@@ -720,9 +750,10 @@ function setValKind(kind){ VAL.kind=kind; VAL.subject=''; VAL.state=[]; renderVa
 
 function loadValidation(){
   $('valItems').innerHTML = '<div class="text-center py-10 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin"></div></div>';
-  google.script.run.withSuccessHandler(onValPayload).withFailureHandler(function(e){ $('valItems').innerHTML = emptyState('Gagal memuat: '+esc(e.message)); }).getValidationPayload(VAL.kind);
+  google.script.run.withSuccessHandler(onValPayload).withFailureHandler(function(e){ $('valItems').innerHTML = emptyState('Gagal memuat: '+esc(e.message)); }).getValidationPayload(VAL.kind, SESSION_TOKEN);
 }
 function onValPayload(d){
+  if(_handleAuth_(d)) return;
   if(d && d._error){ $('valItems').innerHTML = emptyState(d._error); return; }
   VAL.payload = d;
   var sel = $('valSubject');
@@ -816,7 +847,7 @@ function saveValidationNow(){
       '<span class="text-green-600 text-sm font-semibold">\u2713 Tersimpan ('+res.saved+' item)</span>'+
       '<button onclick="saveValidationNow()" class="px-6 py-3 rounded-xl bg-brand hover:bg-brand-dark text-ink font-bold shadow-lg">Simpan Ulang</button></div>';
     loadValidation();
-  }).withFailureHandler(function(e){ alert('Gagal: '+e.message); renderValItems(); }).saveValidation(VAL.kind, validator, VAL.subject, JSON.stringify(VAL.state));
+  }).withFailureHandler(function(e){ alert('Gagal: '+e.message); renderValItems(); }).saveValidation(VAL.kind, validator, VAL.subject, JSON.stringify(VAL.state), SESSION_TOKEN);
 }
 </script>
 </body>

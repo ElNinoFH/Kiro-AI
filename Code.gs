@@ -522,7 +522,8 @@ function cellStr_(c) {
   return c;
 }
 
-function getDashboardData() {
+function getDashboardData(token) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
   try {
     return _buildDashboardData();
   } catch (e) {
@@ -859,7 +860,8 @@ function _findSourceSheet(ss, srcType) {
   return null;
 }
 
-function getValidationPayload(kind) {
+function getValidationPayload(kind, token) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
   try {
     var ss = getSpreadsheet_();
     var srcType = (kind === 'manager') ? 'managerself' : 'karyawan';
@@ -912,7 +914,8 @@ function getValidationPayload(kind) {
   }
 }
 
-function saveValidation(kind, validator, subject, itemsJson) {
+function saveValidation(kind, validator, subject, itemsJson, token) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
   try {
     var items = (typeof itemsJson === 'string') ? JSON.parse(itemsJson) : itemsJson;
     var ss = getSpreadsheet_();
@@ -932,4 +935,109 @@ function saveValidation(kind, validator, subject, itemsJson) {
   } catch (e) {
     return { _error: e.message };
   }
+}
+
+
+
+// =============================================================================
+//  AUTENTIKASI — Password Hash + Session Token
+//
+//  Setup awal (hanya sekali):
+//   1. Jalankan fungsi initPassword() untuk menyimpan hash password awal.
+//   2. Untuk ganti password: jalankan changePassword('passwordBaru')
+//
+//  Alur login:
+//   Client kirim password teks -> server hash SHA-256 -> cocokkan dengan
+//   hash tersimpan -> jika cocok, buat UUID session token -> simpan di
+//   Script Properties dengan waktu kadaluarsa -> kirim token ke client.
+//   Client simpan token di sessionStorage -> sertakan di setiap API call.
+// =============================================================================
+
+var SESSION_TTL_MS  = 8 * 60 * 60 * 1000;   // 8 jam
+var DEFAULT_PWD     = 'uralakreatif';
+var PROP_PWD_HASH   = 'DASH_PWD_HASH';
+var PROP_SESSION_PFX = 'SESS_';
+
+/** Hitung SHA-256 dari string, kembalikan hex lowercase. */
+function _sha256_(s) {
+  var bytes = Utilities.computeDigest(
+    Utilities.DigestAlgorithm.SHA_256, s, Utilities.Charset.UTF_8
+  );
+  return bytes.map(function (b) {
+    var h = (b < 0 ? b + 256 : b).toString(16);
+    return h.length === 1 ? '0' + h : h;
+  }).join('');
+}
+
+/** Inisialisasi hash password default. Jalankan 1x saat setup pertama. */
+function initPassword() {
+  var props = PropertiesService.getScriptProperties();
+  if (!props.getProperty(PROP_PWD_HASH)) {
+    props.setProperty(PROP_PWD_HASH, _sha256_(DEFAULT_PWD));
+    Logger.log('Password hash disimpan. Password default: ' + DEFAULT_PWD);
+  } else {
+    Logger.log('Password hash sudah ada — tidak diubah.');
+  }
+}
+
+/** Ganti password. Panggil changePassword('passwordBaruKamu') dari editor. */
+function changePassword(newPassword) {
+  if (!newPassword || newPassword.length < 6) {
+    Logger.log('ERROR: Password minimal 6 karakter.');
+    return;
+  }
+  var props = PropertiesService.getScriptProperties();
+  props.setProperty(PROP_PWD_HASH, _sha256_(newPassword));
+  // Hapus semua sesi aktif (force re-login)
+  var all = props.getProperties();
+  Object.keys(all).forEach(function (k) {
+    if (k.indexOf(PROP_SESSION_PFX) === 0) { props.deleteProperty(k); }
+  });
+  Logger.log('Password berhasil diganti dan semua sesi direset.');
+}
+
+/** Verifikasi password dari client. Kembalikan { ok, token } atau { ok:false }. */
+function verifyLogin(password) {
+  try {
+    if (!password) { return { ok: false }; }
+    var props   = PropertiesService.getScriptProperties();
+    var stored  = props.getProperty(PROP_PWD_HASH);
+
+    // Auto-inisialisasi hash jika belum ada
+    if (!stored) {
+      stored = _sha256_(DEFAULT_PWD);
+      props.setProperty(PROP_PWD_HASH, stored);
+    }
+
+    if (_sha256_(password) !== stored) { return { ok: false }; }
+
+    // Buat session token
+    var token  = Utilities.getUuid();
+    var expiry = String(Date.now() + SESSION_TTL_MS);
+    props.setProperty(PROP_SESSION_PFX + token, expiry);
+    return { ok: true, token: token, ttlHours: 8 };
+  } catch (e) {
+    return { ok: false };
+  }
+}
+
+/** Validasi session token. Kembalikan true jika valid, false jika tidak/kadaluarsa. */
+function _checkSession_(token) {
+  if (!token) { return false; }
+  var props  = PropertiesService.getScriptProperties();
+  var expiry = props.getProperty(PROP_SESSION_PFX + token);
+  if (!expiry) { return false; }
+  if (Date.now() > Number(expiry)) {
+    props.deleteProperty(PROP_SESSION_PFX + token);
+    return false;
+  }
+  return true;
+}
+
+/** Perpanjang sesi (opsional, dipanggil saat ada aktivitas). */
+function refreshSession(token) {
+  if (!_checkSession_(token)) { return { ok: false }; }
+  var props  = PropertiesService.getScriptProperties();
+  props.setProperty(PROP_SESSION_PFX + token, String(Date.now() + SESSION_TTL_MS));
+  return { ok: true };
 }
