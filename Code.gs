@@ -696,12 +696,39 @@ function _buildDashboardData() {
 
   try { _resolveBars_(ss, data); } catch (e) {
     Logger.log('_resolveBars_ warning: ' + e.message);
-    // fallback: resolvedBars = bars untuk semua employee/manager
     data.employees.forEach(function(e){ if(!e.resolvedBars){ e.resolvedBars = e.bars; e.validated = false; } });
     data.managerSelf.forEach(function(m){ if(!m.resolvedBars){ m.resolvedBars = m.bars; m.validated = false; } });
   }
 
+  // Deduplikasi: satu entri per nama unik (ambil yang paling banyak datanya)
+  data.employees  = _dedup_(data.employees,  'name');
+  data.managerEval = _dedup_(data.managerEval, 'employee');
+  data.managerSelf = _dedup_(data.managerSelf, 'manager');
+  data.ownerEval  = _dedup_(data.ownerEval,  'manager');
+
   return data;
+}
+
+// Deduplikasi array berdasarkan field kunci.
+// Untuk nama yang sama, ambil entri dengan jumlah field non-kosong terbanyak.
+function _dedup_(arr, key) {
+  var seen = {}, result = [];
+  arr.forEach(function (item) {
+    var k = String(item[key] || '').trim().toLowerCase();
+    if (!k) { return; }
+    if (seen[k] === undefined) {
+      seen[k] = result.length;
+      result.push(item);
+    } else {
+      // Hitung field non-kosong; simpan yang lebih lengkap
+      var scoreNew = 0, scoreOld = 0;
+      var old = result[seen[k]];
+      for (var f in item) { if (item[f] !== '' && item[f] !== null && item[f] !== undefined) { scoreNew++; } }
+      for (var g in old)  { if (old[g]  !== '' && old[g]  !== null && old[g]  !== undefined) { scoreOld++; } }
+      if (scoreNew > scoreOld) { result[seen[k]] = item; }
+    }
+  });
+  return result;
 }
 
 // Bangun resolvedBars (skor final): Validasi -> Cross-reference/Owner -> Self
