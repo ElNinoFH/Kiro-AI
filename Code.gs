@@ -589,7 +589,12 @@ function _buildDashboardData() {
       sheetType = 'unknown';
     }
 
-    function val(row, kw) { var c = findCol_(headers, kw); return c >= 0 ? cellStr_(row[c]) : ''; }
+    function val(row, kw) {
+      var c = findCol_(headers, kw);
+      if (c < 0) { return ''; }
+      var v = cellStr_(row[c]);
+      return (typeof v === 'string') ? v.trim() : v;
+    }
     function levels(row) {
       var out = {};
       for (var i = 0; i < headers.length; i++) {
@@ -597,7 +602,9 @@ function _buildDashboardData() {
         var idx = h.toLowerCase().indexOf('untuk kompetensi');
         if (idx >= 0) {
           var comp = h.substring(idx + 'untuk kompetensi'.length).replace(/\?\s*$/, '').trim();
-          var lvl = stmtMap[norm_(row[i])];
+          var cellVal = row[i];
+          var cellStr = (cellVal instanceof Date) ? cellStr_(cellVal) : String(cellVal == null ? '' : cellVal);
+          var lvl = stmtMap[norm_(cellStr)];
           if (lvl) { out[comp] = lvl; }
         }
       }
@@ -609,7 +616,7 @@ function _buildDashboardData() {
         var nm = val(row, 'nama lengkap');
         if (!nm || !String(nm).trim()) { return; }
         data.employees.push({
-          name: nm,
+          name: nm.trim(),
           division: val(row, 'divisi'),
           position: val(row, 'posisi'),
           manager: val(row, 'atasan langsung'),
@@ -644,7 +651,7 @@ function _buildDashboardData() {
         var nm = val(row, 'nama manager');
         if (!nm || !String(nm).trim()) { return; }
         data.managerSelf.push({
-          manager: nm,
+          manager: nm.trim(),
           division: val(row, 'divisi yang dipimpin'),
           teamSize: val(row, 'jumlah anggota tim'),
           visiMisiComm: val(row, 'mengomunikasikan visi-misi'),
@@ -657,7 +664,7 @@ function _buildDashboardData() {
         var nm = val(row, 'nama manager yang dinilai');
         if (!nm || !String(nm).trim()) { return; }
         data.ownerEval.push({
-          manager: nm,
+          manager: nm.trim(),
           division: val(row, 'divisi'),
           visiMisiStatement: val(row, 'membawa visi-misi'),
           recommendation: val(row, 'rekomendasi owner'),
@@ -670,9 +677,9 @@ function _buildDashboardData() {
         var emp = val(row, 'nama karyawan yang dinilai');
         if (!emp || !String(emp).trim()) { return; }
         data.managerEval.push({
-          manager: val(row, 'nama manager (penilai)'),
+          manager: val(row, 'nama manager (penilai)').trim(),
           division: val(row, 'divisi'),
-          employee: val(row, 'nama karyawan yang dinilai'),
+          employee: val(row, 'nama karyawan yang dinilai').trim(),
           position: val(row, 'posisi'),
           workloadRating: val(row, 'menilai beban kerja karyawan ini'),
           overtimeFreq: val(row, 'lembur untuk memenuhi tenggat'),
@@ -687,7 +694,12 @@ function _buildDashboardData() {
     }
   });
 
-  _resolveBars_(ss, data);
+  try { _resolveBars_(ss, data); } catch (e) {
+    Logger.log('_resolveBars_ warning: ' + e.message);
+    // fallback: resolvedBars = bars untuk semua employee/manager
+    data.employees.forEach(function(e){ if(!e.resolvedBars){ e.resolvedBars = e.bars; e.validated = false; } });
+    data.managerSelf.forEach(function(m){ if(!m.resolvedBars){ m.resolvedBars = m.bars; m.validated = false; } });
+  }
 
   return data;
 }

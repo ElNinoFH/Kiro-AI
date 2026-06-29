@@ -238,7 +238,7 @@ function onData(d){
 }
 function onFilter(){ FILTER = $('divFilter').value; renderAll(); }
 
-function inFilter(div){ return !FILTER || String(div)===FILTER; }
+function inFilter(div){ return !FILTER || String(div||'').trim().toLowerCase() === FILTER.toLowerCase(); }
 function empFiltered(){ return (DATA.employees||[]).filter(function(e){return inFilter(e.division);}); }
 
 // ===================== TAB SWITCH =====================
@@ -271,7 +271,8 @@ function avgBars(barsObj){
   return v.reduce(function(a,b){return a+b;},0)/v.length;
 }
 function managerRatingFor(empName){
-  return (DATA.managerEval||[]).filter(function(m){return norm(m.employee)===norm(empName);})[0];
+  var n = String(empName||'').trim().toLowerCase();
+  return (DATA.managerEval||[]).filter(function(m){ return String(m.employee||'').trim().toLowerCase() === n; })[0];
 }
 function norm(s){ return String(s==null?'':s).trim().toLowerCase(); }
 function levelBadge(lvl){
@@ -397,8 +398,8 @@ function renderKaryawan(){
   renderEmpProfile();
 }
 function renderEmpProfile(){
-  var name = $('empSel').value;
-  var e = empFiltered().filter(function(x){return (x.name||'(tanpa nama)')===name;})[0];
+  var name = ($('empSel').value || '').trim();
+  var e = empFiltered().filter(function(x){ return String(x.name||'').trim() === name; })[0];
   if(!e){ $('empBody').innerHTML = emptyState('Data tidak ditemukan.'); return; }
   var mr = managerRatingFor(e.name);
   var rec = mr ? mr.recommendation : '';
@@ -658,8 +659,8 @@ function renderManager(){
 
 
 function renderMgrProfile(){
-  var name = $('mgrSel').value;
-  var self = (DATA.managerSelf||[]).filter(function(m){return (m.manager||'(tanpa nama)')===name;})[0];
+  var name = ($('mgrSel').value || '').trim();
+  var self = (DATA.managerSelf||[]).filter(function(m){ return String(m.manager||'').trim() === name; })[0];
   var owner = (DATA.ownerEval||[]).filter(function(o){return (o.manager||'(tanpa nama)')===name;})[0];
   var div = (self&&self.division) || (owner&&owner.division) || '-';
   $('mgrBody').innerHTML =
