@@ -1383,7 +1383,7 @@ function _buildAnalysisPrompt_(subjectName, division, fields) {
 function _callGemini_(prompt) {
   var key = _getGeminiKey_();
   if (!key) { return null; }
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + _getModel_() + ':generateContent';
 
   var payload = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1413,7 +1413,8 @@ function testGemini() {
   var key = _getGeminiKey_();
   if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("...") dulu.'); return; }
   Logger.log('Key terdeteksi (awalan): ' + key.slice(0, 6) + '... panjang ' + key.length);
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
+  Logger.log('Model aktif: ' + _getModel_());
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + _getModel_() + ':generateContent';
   try {
     var res = UrlFetchApp.fetch(url, {
       method: 'post', contentType: 'application/json',
@@ -1969,4 +1970,83 @@ function _attachOkr_(ss, data) {
     if (o) { e.okrPct = o.pct; e.okrStatus = o.status; e.okrSummary = o.summary; }
     else { e.okrPct = null; e.okrStatus = ''; e.okrSummary = ''; }
   });
+}
+
+
+
+// =============================================================================
+//  PEMILIHAN MODEL GEMINI
+//  Akun/key tertentu hanya punya kuota free-tier pada sebagian model.
+//  - findWorkingGeminiModel(): coba beberapa model, simpan yang berhasil (200).
+//  - listGeminiModels(): tampilkan daftar model yang bisa diakses key Anda.
+//  - setGeminiModel('nama-model'): set manual.
+// =============================================================================
+
+var PROP_GEMINI_MODEL = 'GEMINI_MODEL';
+
+function _getModel_() {
+  return PropertiesService.getScriptProperties().getProperty(PROP_GEMINI_MODEL) || ANALYSIS_CFG.model;
+}
+
+function setGeminiModel(name) {
+  if (!name) { Logger.log('Pakai: setGeminiModel("gemini-2.5-flash")'); return; }
+  PropertiesService.getScriptProperties().setProperty(PROP_GEMINI_MODEL, String(name).trim());
+  Logger.log('Model disetel ke: ' + String(name).trim());
+}
+
+// Coba beberapa model, pakai & simpan model pertama yang mengembalikan HTTP 200.
+function findWorkingGeminiModel() {
+  var key = _getGeminiKey_();
+  if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("...") dulu.'); return; }
+  var candidates = [
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite',
+    'gemini-2.0-flash',
+    'gemini-2.0-flash-lite',
+    'gemini-flash-latest',
+    'gemini-1.5-flash'
+  ];
+  var found = '';
+  for (var i = 0; i < candidates.length; i++) {
+    var m = candidates[i];
+    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + m + ':generateContent';
+    try {
+      var res = UrlFetchApp.fetch(url, {
+        method: 'post', contentType: 'application/json',
+        headers: { 'x-goog-api-key': key },
+        payload: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'OK' }] }] }),
+        muteHttpExceptions: true
+      });
+      var code = res.getResponseCode();
+      Logger.log(m + ' -> HTTP ' + code);
+      if (code === 200) { found = m; break; }
+      else { Logger.log('   ' + res.getContentText().slice(0, 160)); }
+    } catch (e) { Logger.log(m + ' -> error ' + e.message); }
+    Utilities.sleep(800); // jeda agar tidak kena rate limit
+  }
+  if (found) {
+    setGeminiModel(found);
+    Logger.log('>>> BERHASIL. Model yang dipakai: ' + found + '. Dashboard siap memakai AI.');
+  } else {
+    Logger.log('>>> Tidak ada model dengan kuota gratis untuk key ini.');
+    Logger.log('    Kemungkinan akun belum punya free tier. Aktifkan billing di Google Cloud project ');
+    Logger.log('    (https://aistudio.google.com -> Get API key -> project -> enable billing), atau pakai akun/region lain.');
+  }
+}
+
+// Tampilkan daftar model yang dapat diakses oleh API key Anda.
+function listGeminiModels() {
+  var key = _getGeminiKey_();
+  if (!key) { Logger.log('BELUM ADA API KEY.'); return; }
+  try {
+    var res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models', {
+      method: 'get', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true
+    });
+    Logger.log('HTTP ' + res.getResponseCode());
+    var json = JSON.parse(res.getContentText());
+    (json.models || []).forEach(function (m) {
+      var methods = (m.supportedGenerationMethods || []).join(',');
+      if (methods.indexOf('generateContent') >= 0) { Logger.log(m.name + '  [' + methods + ']'); }
+    });
+  } catch (e) { Logger.log('error: ' + e.message); }
 }
