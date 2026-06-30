@@ -1383,11 +1383,7 @@ function _buildAnalysisPrompt_(subjectName, division, fields) {
 function _callGemini_(prompt) {
   var key = _getGeminiKey_();
   if (!key) { return null; }
-  var base = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
-  var url = base, headers = {};
-  // Key AI Studio (AIza...) -> query param. Selain itu -> OAuth Bearer token.
-  if (key.indexOf('AIza') === 0) { url = base + '?key=' + encodeURIComponent(key); }
-  else { headers['Authorization'] = 'Bearer ' + key; }
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
 
   var payload = {
     contents: [{ role: 'user', parts: [{ text: prompt }] }],
@@ -1395,11 +1391,12 @@ function _callGemini_(prompt) {
   };
   try {
     var res = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json', headers: headers,
+      method: 'post', contentType: 'application/json',
+      headers: { 'x-goog-api-key': key },   // cara resmi; berlaku utk key AIza... maupun AQ...
       payload: JSON.stringify(payload), muteHttpExceptions: true
     });
     var code = res.getResponseCode();
-    if (code !== 200) { Logger.log('Gemini HTTP ' + code + ': ' + res.getContentText().slice(0, 300)); return null; }
+    if (code !== 200) { Logger.log('Gemini HTTP ' + code + ': ' + res.getContentText().slice(0, 400)); return null; }
     var json = JSON.parse(res.getContentText());
     var cand = json.candidates && json.candidates[0];
     if (!cand || !cand.content || !cand.content.parts || !cand.content.parts[0]) { return null; }
@@ -1407,6 +1404,29 @@ function _callGemini_(prompt) {
   } catch (e) {
     Logger.log('Gemini error: ' + e.message);
     return null;
+  }
+}
+
+// Diagnosa cepat: jalankan fungsi ini dari editor lalu lihat Execution log.
+// Menampilkan kode HTTP + isi respons asli dari Gemini (sukses atau error).
+function testGemini() {
+  var key = _getGeminiKey_();
+  if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("...") dulu.'); return; }
+  Logger.log('Key terdeteksi (awalan): ' + key.slice(0, 6) + '... panjang ' + key.length);
+  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + ANALYSIS_CFG.model + ':generateContent';
+  try {
+    var res = UrlFetchApp.fetch(url, {
+      method: 'post', contentType: 'application/json',
+      headers: { 'x-goog-api-key': key },
+      payload: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Balas hanya dengan kata: OK' }] }] }),
+      muteHttpExceptions: true
+    });
+    Logger.log('HTTP ' + res.getResponseCode());
+    Logger.log('Respons: ' + res.getContentText().slice(0, 900));
+    if (res.getResponseCode() === 200) { Logger.log('>>> BERHASIL. API key valid & request terkirim. Cek usage di AI Studio.'); }
+    else { Logger.log('>>> GAGAL. Lihat pesan error di atas (mis. API_KEY_INVALID, model tidak ditemukan, dsb).'); }
+  } catch (e) {
+    Logger.log('Exception: ' + e.message);
   }
 }
 
