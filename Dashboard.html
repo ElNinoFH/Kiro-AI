@@ -717,6 +717,10 @@ function renderRaw(){
 // ===================== TAB: ANALYSIS (Kelebihan & Kekurangan) =====================
 var ANALYSIS = null;
 var ANALYSIS_REQ = 0;
+var ANALYSIS_DIV = '';
+var ANALYSIS_EMP = '';
+var RCA_CACHE = {};
+var RCA_LOADING = false;
 
 function renderAnalysis(){
   var p = $('tab-analysis');
@@ -768,21 +772,185 @@ function runAnalysisNow(){
 }
 function renderAnalysisView(){
   var p = $('tab-analysis');
-  var subjects = (ANALYSIS.subjects||[]).filter(function(s){ return inFilter(s.division); });
-  var body;
   if(!ANALYSIS.generated){
-    body = '<div class="card p-12 text-center fade-in">'+
+    p.innerHTML = analysisToolbar() +
+      '<div class="card p-12 text-center fade-in">'+
       '<div class="w-14 h-14 rounded-full border-4 border-brand/50 mx-auto mb-4 flex items-center justify-center text-2xl">&#129504;</div>'+
       '<p class="font-bold text-lg mb-2">Belum ada hasil analisis</p>'+
       '<p class="text-gray-500 text-sm max-w-md mx-auto mb-4">Klik <b>Jalankan Analisis AI</b> di atas untuk menghasilkan ringkasan kelebihan & kekurangan tiap karyawan dari seluruh data spreadsheet.</p>'+
     '</div>';
-  } else if(!subjects.length){
-    body = emptyState('Belum ada hasil analisis'+(FILTER?' untuk divisi '+FILTER:'')+'. Coba jalankan ulang setelah ada data karyawan.');
-  } else {
-    body = '<div class="grid gap-5">'+ subjects.map(analysisCard).join('') +'</div>';
+    return;
   }
-  p.innerHTML = analysisToolbar() + body;
+  var subjects = (ANALYSIS.subjects||[]).filter(function(s){ return !ANALYSIS_DIV || norm(s.division)===norm(ANALYSIS_DIV); });
+  var html = analysisToolbar() + analysisFilterBar();
+  if(ANALYSIS_EMP){
+    html += rcaSection(ANALYSIS_EMP);
+    var sel = subjects.filter(function(s){ return s.name===ANALYSIS_EMP; });
+    html += sel.length ? '<div class="grid gap-5">'+ sel.map(analysisCard).join('') +'</div>' : '';
+  } else if(!subjects.length){
+    html += emptyState('Belum ada hasil analisis'+(ANALYSIS_DIV?' untuk divisi '+ANALYSIS_DIV:'')+'.');
+  } else {
+    html += '<div class="grid gap-5">'+ subjects.map(analysisCard).join('') +'</div>';
+  }
+  p.innerHTML = html;
+  // gambar fishbone bila RCA untuk karyawan terpilih sudah ada
+  if(ANALYSIS_EMP && RCA_CACHE[ANALYSIS_EMP] && !RCA_CACHE[ANALYSIS_EMP]._error){
+    drawFishbone(RCA_CACHE[ANALYSIS_EMP]);
+  }
 }
+
+// ---- Filter bar: dropdown divisi + dropdown karyawan ----
+function analysisDivisions(){
+  var set={}; (ANALYSIS.subjects||[]).forEach(function(s){ if(s.division) set[String(s.division).trim()]=1; });
+  return Object.keys(set).sort();
+}
+function analysisFilterBar(){
+  var divs = analysisDivisions();
+  var divOpts = '<option value="">Semua Divisi</option>'+ divs.map(function(d){ return '<option'+(d===ANALYSIS_DIV?' selected':'')+'>'+esc(d)+'</option>'; }).join('');
+  var emps = (ANALYSIS.subjects||[]).filter(function(s){ return !ANALYSIS_DIV || norm(s.division)===norm(ANALYSIS_DIV); });
+  var empOpts = '<option value="">— pilih karyawan untuk Root Cause —</option>'+ emps.map(function(s){ return '<option'+(s.name===ANALYSIS_EMP?' selected':'')+'>'+esc(s.name)+'</option>'; }).join('');
+  return '<div class="card p-4 mb-5 grid md:grid-cols-3 gap-3 items-end fade-in">'+
+    '<div><label class="text-xs font-semibold text-gray-400">FILTER DIVISI</label>'+
+      '<select onchange="onAnalysisDiv(this.value)" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand">'+divOpts+'</select></div>'+
+    '<div><label class="text-xs font-semibold text-gray-400">PILIH KARYAWAN</label>'+
+      '<select onchange="onAnalysisEmp(this.value)" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand">'+empOpts+'</select></div>'+
+    '<div class="text-xs text-gray-500">Pilih karyawan lalu jalankan <b>Root Cause Analysis</b> untuk melihat MECE, diagram Fishbone, dan saran titik mulai 5 Whys.</div>'+
+  '</div>';
+}
+function onAnalysisDiv(v){ ANALYSIS_DIV=v; ANALYSIS_EMP=''; renderAnalysisView(); }
+function onAnalysisEmp(v){ ANALYSIS_EMP=v; renderAnalysisView(); }
+
+// ---- Root Cause Analysis section ----
+function runRCANow(){
+  if(!ANALYSIS_EMP){ alert('Pilih karyawan dulu.'); return; }
+  RCA_LOADING = true; renderAnalysisView();
+  google.script.run.withSuccessHandler(function(res){
+    RCA_LOADING = false;
+    if(_handleAuth_(res)) return;
+    RCA_CACHE[ANALYSIS_EMP] = res || {_error:'Tidak ada respons.'};
+    renderAnalysisView();
+  }).withFailureHandler(function(e){
+    RCA_LOADING = false;
+    RCA_CACHE[ANALYSIS_EMP] = {_error:(e&&e.message)||'Gagal menjalankan RCA.'};
+    renderAnalysisView();
+  }).getRootCause(SESSION_TOKEN, ANALYSIS_EMP);
+}
+function rcaSection(name){
+  var r = RCA_CACHE[name];
+  var btnLabel = r && !r._error ? 'Analisis Ulang' : 'Jalankan Root Cause Analysis';
+  var head = '<div class="card p-5 mb-5 fade-in">'+
+    '<div class="flex items-center justify-between flex-wrap gap-2 mb-1">'+
+      '<h3 class="font-extrabold text-lg">&#128269; Root Cause Analysis &mdash; '+esc(name)+'</h3>'+
+      '<button id="runRcaBtn" onclick="runRCANow()" '+(RCA_LOADING?'disabled':'')+' class="px-4 py-2 rounded-lg bg-ink text-white text-sm font-semibold hover:bg-gray-800 '+(RCA_LOADING?'opacity-60':'')+'">'+(RCA_LOADING?'Menganalisis...':btnLabel)+'</button>'+
+    '</div>'+
+    '<p class="text-xs text-gray-400 mb-3">Alur: <b>MECE</b> (pisahkan penyebab) &rarr; <b>Fishbone</b> (Ishikawa) &rarr; saran titik mulai <b>5 Whys</b>. Mengintegrasikan NLP + LLM.</p>';
+  if(RCA_LOADING){
+    return head + '<div class="text-center py-10 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-2"></div><p class="text-sm">Menelusuri akar masalah (MECE, fishbone, 5 whys)...</p></div></div>';
+  }
+  if(!r){ return head + '<p class="text-sm text-gray-400">Klik tombol di atas untuk menelusuri akar masalah <b>'+esc(name)+'</b>.</p></div>'; }
+  if(r._error){ return head + '<div class="bg-amber-50 text-amber-700 text-sm rounded-lg p-3">'+esc(r._error)+'</div></div>'; }
+  if(r.noProblem){ return head + '<div class="bg-green-50 text-green-700 text-sm rounded-lg p-3">&#10003; '+esc(r.effect)+'. Tidak perlu RCA.</div></div>'; }
+  return head + rcaBody(r) + '</div>';
+}
+function rcaBody(r){
+  var aiTag = r.aiActive ? '<span class="text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-600">'+esc(r.method||'AI+rule')+'</span>' : '<span class="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">mode keyword</span>';
+  // 1) Effect + Root cause banner
+  var banner =
+    '<div class="grid md:grid-cols-2 gap-3 mb-5">'+
+      '<div class="rounded-xl p-4 bg-rose-50 border border-rose-200">'+
+        '<p class="text-[11px] font-bold text-rose-500 uppercase tracking-wide mb-1">Masalah Inti (Effect)</p>'+
+        '<p class="text-sm font-semibold text-gray-800">'+esc(r.effect)+'</p></div>'+
+      '<div class="rounded-xl p-4 bg-brand-light border border-brand/40">'+
+        '<p class="text-[11px] font-bold text-brand-dark uppercase tracking-wide mb-1">Hipotesis Akar Masalah</p>'+
+        '<p class="text-sm font-semibold text-gray-800">'+esc(r.rootCause)+'</p></div>'+
+    '</div>';
+  // 2) Fishbone diagram (digambar setelah innerHTML diset)
+  var fishbone =
+    '<div class="mb-2 flex items-center justify-between"><h4 class="font-bold text-sm">Diagram Fishbone (Ishikawa)</h4>'+
+      '<div class="flex items-center gap-2">'+aiTag+'<span class="num text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">keyakinan '+Math.round((Number(r.confidence)||0)*100)+'%</span></div></div>'+
+    '<div class="card p-2 mb-5 overflow-x-auto"><div id="fishbone" style="min-width:760px"></div></div>';
+  // 3) MECE table
+  var mece = '<h4 class="font-bold text-sm mb-2">Penyebab ter-MECE (6 kategori)</h4><div class="grid md:grid-cols-2 lg:grid-cols-3 gap-3 mb-5">';
+  (r.categories||[]).forEach(function(c){
+    var causes = (c.causes||[]);
+    var list = causes.length
+      ? causes.map(function(x){ return '<li class="text-xs text-gray-700 mb-1">&bull; '+esc(x.cause)+(x.from==='AI'?' <span class="text-[9px] text-blue-500">AI</span>':'')+(x.evidence?'<span class="block text-[10px] text-gray-400 italic ml-2">'+esc(x.evidence)+'</span>':'')+'</li>'; }).join('')
+      : '<li class="text-xs text-gray-300">&ndash; tidak ada</li>';
+    mece += '<div class="rounded-lg border '+(causes.length?'border-gray-200':'border-gray-100')+' p-3">'+
+      '<p class="text-xs font-bold mb-1" style="color:'+meceColor(c.id)+'">'+esc(c.id)+' &middot; '+esc(c.name)+' <span class="num text-gray-400">('+causes.length+')</span></p>'+
+      '<ul>'+list+'</ul></div>';
+  });
+  mece += '</div>';
+  // 4) 5 Whys starter
+  var fw = r.fiveWhys || {};
+  var whys = '<h4 class="font-bold text-sm mb-2">Saran Titik Mulai 5 Whys</h4>'+
+    '<div class="rounded-xl border border-accent/40 bg-accent-light p-4">'+
+      (fw.focus?'<p class="text-[11px] text-accent font-bold uppercase mb-1">Mulai dari kategori: '+esc(fw.focus)+'</p>':'')+
+      '<p class="text-sm text-gray-600 mb-2"><b>Pernyataan masalah:</b> '+esc(fw.problem||r.effect)+'</p>'+
+      '<div class="bg-white rounded-lg p-3 border border-accent/30 mb-2"><p class="text-[11px] text-gray-400 font-semibold mb-0.5">PERTANYAAN "MENGAPA" PERTAMA</p>'+
+        '<p class="text-base font-bold text-ink">&#10067; '+esc(fw.first_why||('Mengapa '+(r.effect||'')+'?'))+'</p></div>'+
+      (fw.rationale?'<p class="text-xs text-gray-500"><b>Alasan:</b> '+esc(fw.rationale)+'</p>':'')+
+      '<div class="mt-3 grid gap-1.5">'+
+        [1,2,3,4,5].map(function(n){ return '<div class="flex items-center gap-2 text-xs text-gray-400"><span class="w-6 h-6 rounded-full bg-white border border-accent/40 flex items-center justify-center font-bold text-accent shrink-0">'+n+'</span><span class="border-b border-dashed border-gray-200 flex-1 pb-1">'+(n===1?'<span class="text-gray-700">'+esc(fw.first_why||'')+'</span>':'Mengapa ... ? (lanjutkan jawaban dari Why '+(n-1)+')')+'</span></div>'; }).join('')+
+      '</div>'+
+    '</div>';
+  return banner + fishbone + mece + whys;
+}
+function meceColor(id){
+  var map = { M1:'#D97706', M2:'#3B82F6', M3:'#22C55E', M4:'#A855F7', M5:'#EF4444', M6:'#0EA5E9' };
+  return map[id] || '#111111';
+}
+// ---- Gambar Fishbone sebagai SVG ----
+function drawFishbone(r){
+  var host = $('fishbone'); if(!host) return;
+  var W=760, H=460, midY=H/2, headX=W-150;
+  // posisi tulang: 3 atas, 3 bawah (urutan M1..M6)
+  var slots = [
+    {id:'M1', sx:170, dir:-1}, {id:'M2', sx:330, dir:-1}, {id:'M3', sx:490, dir:-1},
+    {id:'M4', sx:250, dir:1},  {id:'M5', sx:410, dir:1},  {id:'M6', sx:570, dir:1}
+  ];
+  var byId={}; (r.categories||[]).forEach(function(c){ byId[c.id]=c; });
+  var svg = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="font-family:Plus Jakarta Sans">';
+  // spine
+  svg += '<line x1="40" y1="'+midY+'" x2="'+headX+'" y2="'+midY+'" stroke="#111" stroke-width="3"/>';
+  svg += '<polygon points="'+headX+','+(midY-8)+' '+headX+','+(midY+8)+' '+(headX+14)+','+midY+'" fill="#111"/>';
+  // head (effect)
+  svg += '<rect x="'+(headX+14)+'" y="'+(midY-46)+'" width="132" height="92" rx="10" fill="#FEE2E2" stroke="#FCA5A5"/>';
+  svg += fishText(headX+22, midY-28, r.effect||'', 17, 4, '#991B1B', 11, true);
+  // bones
+  slots.forEach(function(s){
+    var c = byId[s.id] || {id:s.id, name:s.id, causes:[]};
+    var color = meceColor(s.id);
+    var endX = s.sx-90;
+    var endY = midY + s.dir*(midY-44);
+    // tulang diagonal
+    svg += '<line x1="'+s.sx+'" y1="'+midY+'" x2="'+endX+'" y2="'+endY+'" stroke="'+color+'" stroke-width="2.5"/>';
+    // label kategori di ujung
+    var labY = endY + (s.dir<0? -6 : 18);
+    svg += '<rect x="'+(endX-6)+'" y="'+(labY-13)+'" width="150" height="18" rx="5" fill="'+color+'"/>';
+    svg += '<text x="'+(endX)+'" y="'+(labY)+'" font-size="11" font-weight="700" fill="#fff">'+escSvg(s.id+' '+c.name).slice(0,24)+'</text>';
+    // sampai 3 penyebab sebagai teks kecil dekat tulang
+    var causes=(c.causes||[]).slice(0,3);
+    causes.forEach(function(x,i){
+      var cy = s.dir<0 ? (midY - 30 - i*16 - (s.sx-endX)*0) : (midY + 36 + i*16);
+      // posisikan teks di sepanjang sisi tulang
+      var tx = (s.sx + endX)/2 - 60;
+      var ty = (midY + endY)/2 + (s.dir<0? (-i*15-6) : (i*15+10));
+      svg += '<text x="'+tx+'" y="'+ty+'" font-size="9.5" fill="#374151">&#8226; '+escSvg(x.cause).slice(0,34)+'</text>';
+    });
+  });
+  svg += '</svg>';
+  host.innerHTML = svg;
+}
+function escSvg(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+// teks SVG multi-baris sederhana (word wrap manual)
+function fishText(x,y,str,maxChars,maxLines,color,size,bold){
+  str=String(str==null?'':str); var words=str.split(' '), lines=[], cur='';
+  for(var i=0;i<words.length;i++){ var t=cur?cur+' '+words[i]:words[i]; if(t.length>maxChars){ if(cur)lines.push(cur); cur=words[i]; } else cur=t; if(lines.length>=maxLines)break; }
+  if(cur&&lines.length<maxLines)lines.push(cur);
+  return lines.map(function(l,i){ return '<text x="'+x+'" y="'+(y+i*14)+'" font-size="'+size+'" font-weight="'+(bold?700:400)+'" fill="'+color+'">'+escSvg(l)+'</text>'; }).join('');
+}
+
 function confBadge(c){
   var n = Number(c)||0; var pct = Math.round(n*100);
   var color = n>=0.85 ? 'bg-green-100 text-green-700' : (n>=0.6 ? 'bg-amber-100 text-amber-700' : 'bg-gray-100 text-gray-500');

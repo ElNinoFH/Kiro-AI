@@ -1564,3 +1564,279 @@ function getAnalysisData(token) {
     return { _error: String(e && e.message || e) };
   }
 }
+
+
+
+// =============================================================================
+//  ROOT CAUSE ANALYSIS (RCA) — MECE -> Fishbone (Ishikawa) -> 5 Whys
+//  Alur:
+//   1. Ambil masalah (kekurangan) karyawan dari hasil Analysis.
+//   2. MECE: klasifikasikan tiap penyebab ke 6 kategori yang mutually exclusive
+//      & collectively exhaustive (6M diadaptasi untuk kerja kreatif/knowledge).
+//   3. Fishbone: kategori = tulang besar, penyebab spesifik = tulang kecil.
+//   4. 5 Whys: sarankan titik mulai (pertanyaan "Mengapa" pertama) dari kategori
+//      penyumbang akar masalah paling kuat.
+//   NLP (keyword) + LLM (Gemini) dipakai untuk klasifikasi & hipotesis akar.
+//
+//  getRootCause(token, employeeName) dipanggil dari dashboard (on-demand).
+//  Hemat kuota: membaca masalah dari sheet "Analysis" (hasil runAnalysis),
+//  lalu LLM hanya dipakai untuk memperkaya RCA.
+// =============================================================================
+
+// Kategori MECE (Ishikawa 6M, diadaptasi). ME = tiap penyebab tepat 1 kategori;
+// CE = enam kategori ini menutup seluruh kemungkinan sumber masalah kerja.
+var MECE_CATS = [
+  { id: 'M1', name: 'Manusia & Kompetensi', hint: 'skill, pengetahuan, motivasi, kebiasaan kerja, delegasi, keputusan' },
+  { id: 'M2', name: 'Metode & Proses',      hint: 'cara kerja, alur, SOP, langkah manual/berulang, revisi' },
+  { id: 'M3', name: 'Alat & Sistem',        hint: 'aplikasi, tools, otomasi, akses sistem, template' },
+  { id: 'M4', name: 'Material & Input',     hint: 'kualitas brief/data/aset dari pihak lain, kelengkapan informasi' },
+  { id: 'M5', name: 'Beban & Lingkungan',   hint: 'beban kerja, deadline, dependensi, antrian, koordinasi tim' },
+  { id: 'M6', name: 'Manajemen & Pengukuran', hint: 'target, prioritas, ekspektasi, supervisi, metrik' }
+];
+
+var MECE_KEYWORDS = {
+  M1: ['skill', 'kompeten', 'kemampuan', 'belajar', 'pengalaman', 'kebiasaan', 'motivasi', 'agility', 'growth', 'problem solver', 'delegasi', 'keputusan', 'penilaian diri', 'mandiri'],
+  M2: ['proses', 'alur', 'langkah', 'sop', 'manual', 'revisi', 'rework', 'cara kerja', 'prosedur', 'workflow', 'disederhanakan', 'kualitas output'],
+  M3: ['aplikasi', 'tools', 'alat', 'sistem', 'software', 'otomat', 'akses', 'template', 'perangkat'],
+  M4: ['brief', 'data', 'aset', 'input', 'material', 'informasi', 'klarifikasi', 'tidak lengkap', 'akurat', 'mentah'],
+  M5: ['beban', 'lembur', 'overload', 'deadline', 'tenggat', 'menunggu', 'bergantung', 'ketergantungan', 'approval', 'koordinasi', 'antri', 'padat', 'tertunda'],
+  M6: ['target', 'okr', 'prioritas', 'ekspektasi', 'supervisi', 'arahan', 'pengukuran', 'metrik', 'realistis', 'pelaporan', 'rekomendasi']
+};
+
+function _meceClassify_(aspek, text) {
+  // Kompetensi inti -> selalu M1 (sinyal kuat).
+  var asp = norm_(aspek);
+  var isComp = (VALUES || []).concat(LEADERSHIP_COMPETENCIES || []).some(function (c) { return norm_(c) === asp; });
+  if (isComp) { return 'M1'; }
+  if (asp.indexOf('penilaian diri') >= 0 || asp.indexOf('akurasi') >= 0 || asp.indexOf('pelaporan') >= 0 || asp.indexOf('target') >= 0 || asp.indexOf('pencapaian') >= 0) { return 'M6'; }
+  if (asp.indexOf('kualitas output') >= 0) { return 'M2'; }
+  if (asp.indexOf('beban') >= 0) { return 'M5'; }
+  if (asp.indexOf('material') >= 0 || asp.indexOf('input') >= 0 || asp.indexOf('brief') >= 0) { return 'M4'; }
+
+  var hay = norm_((aspek || '') + ' ' + (text || ''));
+  var best = 'M2', bestScore = 0;
+  Object.keys(MECE_KEYWORDS).forEach(function (cat) {
+    var sc = 0;
+    MECE_KEYWORDS[cat].forEach(function (w) { if (hay.indexOf(w) >= 0) { sc++; } });
+    if (sc > bestScore) { bestScore = sc; best = cat; }
+  });
+  return best;
+}
+
+function _emptyBuckets_() {
+  var b = {};
+  MECE_CATS.forEach(function (c) { b[c.id] = { id: c.id, name: c.name, hint: c.hint, causes: [] }; });
+  return b;
+}
+
+function _meceBuckets_(problems) {
+  var b = _emptyBuckets_();
+  problems.forEach(function (p) {
+    var cat = _meceClassify_(p.aspek, p.temuan);
+    b[cat].causes.push({
+      cause: String(p.temuan || p.aspek || ''),
+      evidence: String(p.bukti || p.sumber || ''),
+      from: 'data'
+    });
+  });
+  return b;
+}
+
+function _bucketsToArr_(b) {
+  return MECE_CATS.map(function (c) {
+    var bb = b[c.id];
+    return {
+      id: c.id, name: c.name, hint: c.hint,
+      causes: (bb.causes || []).map(function (x) {
+        return { cause: String(x.cause || ''), evidence: String(x.evidence || ''), from: String(x.from || 'data') };
+      })
+    };
+  });
+}
+
+function _topBucketId_(b) {
+  var top = MECE_CATS[0].id;
+  MECE_CATS.forEach(function (c) { if (b[c.id].causes.length > b[top].causes.length) { top = c.id; } });
+  return top;
+}
+
+function _rcaEffect_(problems) {
+  var txt = problems.map(function (p) { return norm_(p.aspek + ' ' + p.temuan); }).join(' ');
+  if (txt.indexOf('overload') >= 0 || txt.indexOf('lembur') >= 0 || txt.indexOf('beban') >= 0) { return 'Beban kerja berlebih & risiko inefisiensi/burnout'; }
+  if (txt.indexOf('rework') >= 0 || txt.indexOf('kualitas output') >= 0) { return 'Kualitas output rendah (tingkat revisi/rework tinggi)'; }
+  if (txt.indexOf('okr') >= 0 || txt.indexOf('target') >= 0 || txt.indexOf('pencapaian') >= 0) { return 'Target/OKR tidak tercapai sesuai ekspektasi'; }
+  var comp = problems.filter(function (p) { return (VALUES || []).some(function (v) { return norm_(p.aspek) === norm_(v); }); })[0];
+  if (comp) { return 'Gap kompetensi pada ' + comp.aspek; }
+  return problems.length ? String(problems[0].temuan) : 'Tidak ada masalah signifikan';
+}
+
+function _fiveWhysFallback_(effect, b) {
+  var topId = _topBucketId_(b);
+  var cat = b[topId];
+  var firstCause = (cat.causes[0] && cat.causes[0].cause) ? cat.causes[0].cause : effect;
+  return {
+    problem: effect,
+    first_why: 'Mengapa ' + String(effect).charAt(0).toLowerCase() + String(effect).slice(1) + '?',
+    focus: cat.name,
+    rationale: 'Mulai dari kategori "' + cat.name + '" karena menyumbang penyebab terbanyak. Telusuri lebih dulu: ' + firstCause
+  };
+}
+
+function _normFiveWhys_(fw, effect) {
+  fw = fw || {};
+  return {
+    problem: String(fw.problem || effect || ''),
+    first_why: String(fw.first_why || ''),
+    focus: String(fw.focus || fw.focusCategory || ''),
+    rationale: String(fw.rationale || '')
+  };
+}
+
+function _avgConf_(problems) {
+  if (!problems.length) { return 1; }
+  var s = 0, n = 0;
+  problems.forEach(function (p) { var c = Number(p.confidence); if (isFinite(c)) { s += c; n++; } });
+  return n ? Math.round(s / n * 100) / 100 : 0.8;
+}
+
+// Parser objek JSON tunggal dari output LLM.
+function _parseGeminiObj_(text) {
+  if (!text) { return null; }
+  var t = String(text).trim().replace(/^```json/i, '').replace(/^```/, '').replace(/```$/, '').trim();
+  try { var o = JSON.parse(t); return (o && typeof o === 'object' && !Array.isArray(o)) ? o : null; }
+  catch (e) {
+    var m = t.match(/\{[\s\S]*\}/);
+    if (m) { try { return JSON.parse(m[0]); } catch (e2) { return null; } }
+    return null;
+  }
+}
+
+// LLM enrichment untuk RCA. Mengembalikan objek {effect, root_cause, categories, five_whys_start, confidence} atau null.
+function _rcaLLM_(name, division, problems) {
+  var key = _getGeminiKey_();
+  if (!key) { return null; }
+
+  var probList = problems.map(function (p, i) {
+    return '  {"id":' + i + ',"masalah":"' + String(p.temuan || '').replace(/"/g, "'") + '","aspek":"' + String(p.aspek || '').replace(/"/g, "'") + '","bukti":"' + String(p.bukti || '').replace(/"/g, "'") + '"}';
+  }).join(',\n');
+
+  var cats = MECE_CATS.map(function (c) { return c.id + '=' + c.name + ' (' + c.hint + ')'; }).join('; ');
+
+  var prompt = [
+    'Anda adalah konsultan continuous improvement di URALA (agensi kreatif).',
+    'Lakukan Root Cause Analysis untuk karyawan ' + name + ' (Divisi ' + division + ') secara DISIPLIN dan AKURAT.',
+    '',
+    'DAFTAR MASALAH (kekurangan) terdeteksi:',
+    '[\n' + probList + '\n]',
+    '',
+    'KATEGORI MECE (gunakan PERSIS enam ini): ' + cats,
+    '',
+    'INSTRUKSI:',
+    '1. Tentukan SATU "effect" = masalah inti paling berdampak (ringkas, 1 kalimat).',
+    '2. Petakan tiap penyebab ke TEPAT SATU kategori MECE (mutually exclusive, tidak tumpang tindih). Jika satu masalah punya beberapa akar, pecah menjadi beberapa penyebab di kategori berbeda.',
+    '3. Untuk tiap penyebab sertakan "evidence" singkat dari data/bukti.',
+    '4. Rumuskan SATU "root_cause" = hipotesis akar yang paling mungkin (spesifik, dapat ditindaklanjuti).',
+    '5. Sarankan titik mulai 5 Whys: "problem" (pernyataan masalah), "first_why" (pertanyaan Mengapa pertama yang paling tepat), "focus" (nama kategori MECE yang jadi titik mulai), dan "rationale" (alasan singkat kenapa mulai dari sana).',
+    '6. "confidence" 0..1.',
+    '',
+    'KELUARKAN HANYA JSON objek (tanpa teks lain):',
+    '{"effect":"...","root_cause":"...","categories":[{"id":"M1","causes":[{"cause":"...","evidence":"..."}]}],"five_whys_start":{"problem":"...","first_why":"...","focus":"...","rationale":"..."},"confidence":0.0}'
+  ].join('\n');
+
+  var runs = [];
+  for (var i = 0; i < 2; i++) {
+    var txt = _callGemini_(prompt);
+    var obj = _parseGeminiObj_(txt);
+    if (obj) { runs.push(obj); }
+  }
+  if (!runs.length) { return null; }
+
+  // Gabung: pakai run pertama sebagai dasar, union causes dari run kedua (dedup).
+  var base = runs[0];
+  if (runs[1] && runs[1].categories) {
+    var byId = {};
+    (base.categories || []).forEach(function (c) { byId[c.id] = c; });
+    runs[1].categories.forEach(function (c) {
+      if (!byId[c.id]) { (base.categories = base.categories || []).push(c); byId[c.id] = c; }
+      else {
+        var existing = (byId[c.id].causes || []).map(function (x) { return norm_(x.cause).slice(0, 30); });
+        (c.causes || []).forEach(function (x) {
+          if (existing.indexOf(norm_(x.cause).slice(0, 30)) < 0) { byId[c.id].causes.push(x); }
+        });
+      }
+    });
+  }
+  return base;
+}
+
+// Tempel penyebab hasil LLM ke bucket MECE (dedup terhadap penyebab rule-based).
+function _mergeLLMCauses_(buckets, llmCats) {
+  (llmCats || []).forEach(function (c) {
+    var id = String(c.id || '').toUpperCase();
+    if (!buckets[id]) { return; }
+    var existing = buckets[id].causes.map(function (x) { return norm_(x.cause).slice(0, 30); });
+    (c.causes || []).forEach(function (x) {
+      var key = norm_(x.cause || '').slice(0, 30);
+      if (key && existing.indexOf(key) < 0) {
+        buckets[id].causes.push({ cause: String(x.cause || ''), evidence: String(x.evidence || ''), from: 'AI' });
+        existing.push(key);
+      }
+    });
+  });
+}
+
+function getRootCause(token, employeeName) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
+  try {
+    var ad = getAnalysisData(token);
+    if (ad && ad._auth) { return { _auth: true }; }
+    if (ad && ad._error) { return { _error: ad._error }; }
+    if (!ad || !ad.generated) { return { _error: 'Belum ada hasil Analysis. Klik "Jalankan Analisis AI" dulu, lalu coba lagi.' }; }
+
+    var subj = null;
+    (ad.subjects || []).forEach(function (s) { if (norm_(s.name) === norm_(employeeName)) { subj = s; } });
+    if (!subj) { return { _error: 'Data analisis untuk "' + employeeName + '" tidak ditemukan. Jalankan ulang Analisis AI.' }; }
+
+    var problems = (subj.kekurangan || []).map(function (it) {
+      return { temuan: it.temuan, aspek: it.aspek, bukti: it.bukti, sumber: it.sumber, confidence: it.confidence };
+    });
+
+    if (!problems.length) {
+      return {
+        employee: subj.name, division: subj.division, aiActive: !!_getGeminiKey_(),
+        noProblem: true, effect: 'Tidak ada kekurangan signifikan terdeteksi',
+        rootCause: '-', categories: _bucketsToArr_(_emptyBuckets_()), fiveWhys: null, confidence: 1
+      };
+    }
+
+    var buckets = _meceBuckets_(problems);
+    var effect = _rcaEffect_(problems);
+    var rootCause = '';
+    var fiveWhys = null;
+    var conf = _avgConf_(problems);
+
+    var llm = _rcaLLM_(subj.name, subj.division, problems);
+    if (llm) {
+      if (llm.effect) { effect = String(llm.effect); }
+      if (llm.root_cause) { rootCause = String(llm.root_cause); }
+      if (llm.categories) { _mergeLLMCauses_(buckets, llm.categories); }
+      if (llm.five_whys_start) { fiveWhys = _normFiveWhys_(llm.five_whys_start, effect); }
+      if (typeof llm.confidence === 'number' && isFinite(llm.confidence)) { conf = Math.round(llm.confidence * 100) / 100; }
+    }
+    if (!rootCause) {
+      var topId = _topBucketId_(buckets);
+      var c0 = buckets[topId].causes[0];
+      rootCause = c0 ? c0.cause : effect;
+    }
+    if (!fiveWhys) { fiveWhys = _fiveWhysFallback_(effect, buckets); }
+
+    return {
+      employee: subj.name, division: subj.division, aiActive: !!_getGeminiKey_(),
+      effect: String(effect), rootCause: String(rootCause),
+      categories: _bucketsToArr_(buckets), fiveWhys: fiveWhys,
+      confidence: conf, method: llm ? 'AI+rule' : 'rule'
+    };
+  } catch (e) {
+    return { _error: String(e && e.message || e) };
+  }
+}
