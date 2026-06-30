@@ -42,8 +42,12 @@
     @keyframes fade { from{opacity:0; transform:translateY(6px);} to{opacity:1; transform:none;} }
     .hm-cell { transition: transform .1s ease; }
     .hm-cell:hover { transform: scale(1.12); z-index:5; box-shadow:0 4px 10px rgba(0,0,0,.15); }
-    ::-webkit-scrollbar { height:10px; width:10px; }
-    ::-webkit-scrollbar-thumb { background:#E5E7EB; border-radius:8px; }
+    /* Sembunyikan scrollbar hanya di konten utama (tabel, heatmap, dll) */
+    .overflow-x-auto::-webkit-scrollbar { height:6px; width:6px; }
+    .overflow-x-auto::-webkit-scrollbar-thumb { background:#E5E7EB; border-radius:8px; }
+    /* Header tab: sembunyikan scrollbar sepenuhnya, scroll tetap jalan via touch */
+    .tab-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+    .tab-scroll::-webkit-scrollbar { display: none; }
   </style>
 </head>
 
@@ -87,15 +91,15 @@
           <span class="font-extrabold tracking-tight text-sm sm:text-base">URALA <span class="text-brand">AUDIT</span></span>
         </div>
         <div class="flex items-center gap-1.5 sm:gap-2 shrink-0">
-          <select id="divFilter" onchange="onFilter()" class="bg-gray-800 text-white text-xs sm:text-sm rounded-lg px-2 sm:px-3 py-2 border border-gray-700 outline-none max-w-[42vw] sm:max-w-none">
+          <select id="divFilter" onchange="onFilter()" class="bg-gray-800 text-white text-xs sm:text-sm rounded-lg px-2 sm:px-3 py-1.5 border border-gray-700 outline-none max-w-[36vw] sm:max-w-[180px]">
             <option value="">Semua Divisi</option>
           </select>
-          <button onclick="loadData()" title="Refresh" class="px-2.5 sm:px-3 py-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700">&#8635;</button>
-          <button onclick="logout()" title="Keluar" class="px-2.5 sm:px-3 py-2 rounded-lg bg-gray-800 hover:bg-red-900 border border-gray-700 text-gray-400 hover:text-red-300 text-xs">Keluar</button>
+          <button onclick="loadData()" title="Refresh" class="p-2 rounded-lg bg-gray-800 hover:bg-gray-700 border border-gray-700 text-base leading-none">&#8635;</button>
+          <button onclick="logout()" class="p-2 rounded-lg bg-gray-800 hover:bg-red-900 border border-gray-700 text-gray-400 hover:text-red-300 text-xs">&#9868;</button>
         </div>
       </div>
-      <!-- Baris 2: tab (scroll horizontal di layar kecil) -->
-      <div class="flex items-center gap-2 sm:gap-4 text-sm font-medium overflow-x-auto">
+      <!-- Baris 2: tab — slider disembunyikan (swipe tetap jalan) -->
+      <div class="tab-scroll flex items-center gap-2 sm:gap-4 text-sm font-medium">
         <button class="tab-btn active relative px-2 py-3 sm:py-4 text-gray-300 whitespace-nowrap" data-tab="overview" onclick="switchTab('overview')">Overview</button>
         <button class="tab-btn relative px-2 py-3 sm:py-4 text-gray-300 whitespace-nowrap" data-tab="karyawan" onclick="switchTab('karyawan')">Karyawan</button>
         <button class="tab-btn relative px-2 py-3 sm:py-4 text-gray-300 whitespace-nowrap" data-tab="divisi" onclick="switchTab('divisi')">Divisi</button>
