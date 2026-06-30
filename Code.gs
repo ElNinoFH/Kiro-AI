@@ -1152,6 +1152,15 @@ function _toStr_(c) {
   return String(c).trim();
 }
 
+// Pilih nilai metrik final: utamakan angka dari manager (tervalidasi),
+// fallback ke lapor mandiri karyawan. Mengembalikan { val, validated, other }.
+function _pickValidated_(mgrVal, empVal) {
+  var m = firstNum_(mgrVal), e = firstNum_(empVal);
+  if (m != null) { return { val: m, validated: true, other: e }; }
+  if (e != null) { return { val: e, validated: false, other: null }; }
+  return null;
+}
+
 // ---- Pembuat objek temuan ---------------------------------------------------
 function _mkFinding_(kategori, aspek, temuan, bukti, sumber, confidence, metode) {
   return {
@@ -1184,38 +1193,48 @@ function _analyzeQuant_(e, managerEval) {
     }
   });
 
-  // 2) Rework
-  var rw = firstNum_(e.rework);
-  if (rw != null) {
-    if (rw <= ANALYSIS_CFG.reworkLow) {
-      f.push(_mkFinding_('kelebihan', 'Kualitas Output', 'Tingkat rework rendah (' + rw + '%), output rapi sejak awal', rw + '%', 'Metrik kuantitatif', 1.0, 'rule'));
-    } else if (rw >= ANALYSIS_CFG.reworkHigh) {
-      f.push(_mkFinding_('kekurangan', 'Kualitas Output', 'Tingkat rework tinggi (' + rw + '%), banyak revisi ulang', rw + '%', 'Metrik kuantitatif', 1.0, 'rule'));
-    }
-  }
-
-  // 3) OKR capaian
-  var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
-  if (t && a != null) {
-    var pct = Math.round(a / t * 100);
-    if (pct >= ANALYSIS_CFG.okrHigh) {
-      f.push(_mkFinding_('kelebihan', 'Pencapaian Target', 'Capaian OKR sangat baik (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR', 1.0, 'rule'));
-    } else if (pct < ANALYSIS_CFG.okrLow) {
-      f.push(_mkFinding_('kekurangan', 'Pencapaian Target', 'Capaian OKR di bawah ekspektasi (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR', 1.0, 'rule'));
-    }
-  }
-
-  // 4) Lembur
-  var ot = firstNum_(e.overtime);
-  if (ot != null && ot >= ANALYSIS_CFG.overtimeHigh) {
-    f.push(_mkFinding_('kekurangan', 'Beban Kerja', 'Jam lembur tinggi (' + ot + ' jam) — indikasi overload / inefisiensi', ot + ' jam', 'Metrik kuantitatif', 0.9, 'rule'));
-  }
-
-  // 5) Penilaian beban kerja & rekomendasi dari manager (terstruktur)
+  // Cari penilaian manager untuk karyawan ini (sumber validasi metrik & narasi).
   var mr = null;
   (managerEval || []).forEach(function (m) {
     if (norm_(m.employee) === norm_(e.name)) { mr = m; }
   });
+
+  // 2) Rework — utamakan angka dari manager (tervalidasi), fallback lapor mandiri.
+  var rwP = _pickValidated_(mr && mr.rework, e.rework);
+  if (rwP) {
+    var rw = rwP.val;
+    var rwConf = rwP.validated ? 1.0 : 0.85;
+    var rwSrc = rwP.validated ? 'Metrik rework (divalidasi manager)' : 'Metrik rework (lapor mandiri)';
+    if (rw <= ANALYSIS_CFG.reworkLow) {
+      f.push(_mkFinding_('kelebihan', 'Kualitas Output', 'Tingkat rework rendah (' + rw + '%), output rapi sejak awal', rw + '%', rwSrc, rwConf, 'rule'));
+    } else if (rw >= ANALYSIS_CFG.reworkHigh) {
+      f.push(_mkFinding_('kekurangan', 'Kualitas Output', 'Tingkat rework tinggi (' + rw + '%), banyak revisi ulang', rw + '%', rwSrc, rwConf, 'rule'));
+    }
+    // Selisih signifikan lapor mandiri vs catatan manager -> sinyal akurasi pelaporan.
+    if (rwP.validated && rwP.other != null && Math.abs(rwP.other - rw) >= 15) {
+      f.push(_mkFinding_('kekurangan', 'Akurasi Pelaporan', 'Rework versi karyawan (' + rwP.other + '%) berbeda jauh dari catatan manager (' + rw + '%)', 'selisih ' + Math.abs(rwP.other - rw) + ' poin', 'Validasi silang manager', 0.88, 'rule'));
+    }
+  }
+
+  // 3) OKR capaian (lapor mandiri karyawan; manager tidak mencatat aktual).
+  var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
+  if (t && a != null) {
+    var pct = Math.round(a / t * 100);
+    if (pct >= ANALYSIS_CFG.okrHigh) {
+      f.push(_mkFinding_('kelebihan', 'Pencapaian Target', 'Capaian OKR sangat baik (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR (lapor mandiri)', 0.9, 'rule'));
+    } else if (pct < ANALYSIS_CFG.okrLow) {
+      f.push(_mkFinding_('kekurangan', 'Pencapaian Target', 'Capaian OKR di bawah ekspektasi (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR (lapor mandiri)', 0.9, 'rule'));
+    }
+  }
+
+  // 4) Lembur — utamakan catatan manager (tervalidasi).
+  var otP = _pickValidated_(mr && mr.overtime, e.overtime);
+  if (otP && otP.val >= ANALYSIS_CFG.overtimeHigh) {
+    var otSrc = otP.validated ? 'Lembur (divalidasi manager)' : 'Lembur (lapor mandiri)';
+    f.push(_mkFinding_('kekurangan', 'Beban Kerja', 'Jam lembur tinggi (' + otP.val + ' jam) — indikasi overload / inefisiensi', otP.val + ' jam', otSrc, otP.validated ? 0.95 : 0.85, 'rule'));
+  }
+
+  // 5) Penilaian beban kerja & rekomendasi dari manager (terstruktur)
   if (mr) {
     var wl = norm_(mr.workloadRating);
     if (wl.indexOf('overload') >= 0 || wl.indexOf('sangat berat') >= 0) {
@@ -1263,17 +1282,22 @@ function _keywordSentiment_(text) {
 }
 
 // Field naratif deskriptif yang relevan untuk analisis makna.
-function _narrativeFields_(e) {
+// Menggabungkan narasi karyawan + penilaian manager (sebagai validasi).
+function _narrativeFields_(e, mr) {
   var raw = [
-    { key: 'Hambatan / tugas lebih lama', a: e.obstacles },
-    { key: 'Usulan penyederhanaan proses', a: e.simplify },
-    { key: 'Area yang ingin dikembangkan', a: e.develop },
-    { key: 'Penyebab selisih target OKR', a: e.okrCause },
-    { key: 'Ketergantungan pada pihak lain', a: e.dependency },
-    { key: 'Kualitas data/brief yang diterima', a: e.material },
-    { key: 'Pekerjaan paling memakan waktu', a: e.mostTime },
-    { key: 'Tugas tambahan di luar job desc', a: e.extraTasks }
+    { key: 'Hambatan / tugas lebih lama', a: e.obstacles, src: 'karyawan' },
+    { key: 'Usulan penyederhanaan proses', a: e.simplify, src: 'karyawan' },
+    { key: 'Area yang ingin dikembangkan', a: e.develop, src: 'karyawan' },
+    { key: 'Penyebab selisih target OKR', a: e.okrCause, src: 'karyawan' },
+    { key: 'Ketergantungan pada pihak lain', a: e.dependency, src: 'karyawan' },
+    { key: 'Kualitas data/brief yang diterima', a: e.material, src: 'karyawan' },
+    { key: 'Pekerjaan paling memakan waktu', a: e.mostTime, src: 'karyawan' },
+    { key: 'Tugas tambahan di luar job desc', a: e.extraTasks, src: 'karyawan' }
   ];
+  if (mr) {
+    if (mr.reason)  { raw.push({ key: 'Alasan rekomendasi (penilaian manager)', a: mr.reason, src: 'manager' }); }
+    if (mr.okrTarget) { raw.push({ key: 'Objective/target menurut manager', a: mr.okrTarget, src: 'manager' }); }
+  }
   return raw.filter(function (x) { return x.a && String(x.a).trim().length > 8; });
 }
 
@@ -1315,19 +1339,20 @@ function _buildAnalysisPrompt_(subjectName, division, fields) {
   }).join(',\n');
 
   var inputJson = fields.map(function (fl, i) {
-    return '  {"id":' + i + ',"pertanyaan":"' + String(fl.key).replace(/"/g, "'") + '","jawaban":"' + String(fl.a).replace(/"/g, "'").replace(/\n/g, ' ') + '"}';
+    return '  {"id":' + i + ',"sumber":"' + (fl.src || 'karyawan') + '","pertanyaan":"' + String(fl.key).replace(/"/g, "'") + '","jawaban":"' + String(fl.a).replace(/"/g, "'").replace(/\n/g, ' ') + '"}';
   }).join(',\n');
 
   return [
     'Anda adalah analis SDM senior di URALA (agensi kreatif, divisi Creative/Digital/PR).',
     'Nilai perusahaan: Agility, Growth Mindset, Problem Solver.',
-    'TUGAS: Klasifikasikan tiap jawaban naratif karyawan menjadi "kelebihan", "kekurangan", atau "netral".',
+    'TUGAS: Klasifikasikan tiap jawaban naratif (dari karyawan & manager) menjadi "kelebihan", "kekurangan", atau "netral".',
     'ATURAN PENTING:',
     '1. WAJIB mengutip frasa/kata persis dari jawaban sebagai "bukti". Jika tidak ada bukti tekstual, beri kategori "netral".',
     '2. Bedakan keluhan SISTEM (mis. menunggu approval pihak lain) dari KEKURANGAN PRIBADI karyawan. Keluhan sistem yang di luar kendali karyawan = "netral" (catat aspek tapi jangan jadikan kekurangan pribadi).',
     '3. Pahami nuansa: "lembur demi menyempurnakan" bisa berarti dedikasi (kelebihan) ATAU inefisiensi (kekurangan) — putuskan dari konteks dan turunkan confidence bila ambigu.',
     '4. "confidence" antara 0 dan 1 (0.9+ hanya bila sangat jelas).',
     '5. Selaraskan aspek dengan rubrik kompetensi bila relevan.',
+    '6. Jawaban dengan "sumber":"manager" adalah penilaian/validasi atasan — perlakukan sebagai konfirmasi yang lebih otoritatif. Bila narasi manager menguatkan temuan dari karyawan, naikkan confidence; bila bertentangan, utamakan penilaian manager dan turunkan confidence temuan karyawan.',
     '',
     'RUBRIK KOMPETENSI (acuan makna level):',
     rubrik,
@@ -1480,8 +1505,12 @@ function runAnalysis(token) {
     (data.employees || []).forEach(function (e) {
       if (!e.name) { return; }
       subjects++;
+      var mr = null;
+      (data.managerEval || []).forEach(function (m) {
+        if (norm_(m.employee) === norm_(e.name)) { mr = m; }
+      });
       var findings = _analyzeQuant_(e, data.managerEval)
-        .concat(_analyzeNarrative_(e.name, e.division, _narrativeFields_(e)));
+        .concat(_analyzeNarrative_(e.name, e.division, _narrativeFields_(e, mr)));
       findings = _dedupFindings_(findings);
       findings.forEach(function (f) {
         var status = f.confidence >= ANALYSIS_CFG.threshold ? 'Terkonfirmasi' : 'Perlu ditinjau';
