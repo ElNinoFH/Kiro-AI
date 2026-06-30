@@ -753,25 +753,25 @@ function onAnalysisData(d){
 function analysisToolbar(){
   var ai = ANALYSIS && ANALYSIS.aiActive;
   var aiBadge = ai
-    ? '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-green-100 text-green-700">&#9679; AI aktif (Gemini)</span>'
-    : '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-amber-100 text-amber-700">&#9679; AI nonaktif &mdash; mode keyword. Set API key.</span>';
-  var last = (ANALYSIS && ANALYSIS.lastUpdated) ? 'Terakhir dianalisis: '+esc(ANALYSIS.lastUpdated) : 'Belum pernah dianalisis';
+    ? '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-green-100 text-green-700">AI aktif</span>'
+    : '<span class="px-2 py-1 rounded-md text-xs font-semibold bg-amber-100 text-amber-700">Mode dasar</span>';
+  var last = (ANALYSIS && ANALYSIS.lastUpdated) ? esc(ANALYSIS.lastUpdated) : '-';
   return '<div class="card p-4 mb-5 flex flex-wrap items-center justify-between gap-3">'+
     '<div><div class="flex items-center gap-2 flex-wrap">'+aiBadge+'<span class="text-xs text-gray-400 num">'+last+'</span></div>'+
-    '<p class="text-xs text-gray-500 mt-1">Kelebihan & kekurangan dihitung dari skor BARS tervalidasi, metrik (rework/OKR/lembur), penilaian manager, dan narasi deskriptif (NLP/AI).</p></div>'+
-    '<button id="runAnalysisBtn" onclick="runAnalysisNow()" class="px-5 py-2.5 rounded-xl bg-brand hover:bg-brand-dark text-ink font-bold shrink-0">&#9889; Jalankan Analisis AI</button>'+
+    '<p class="text-xs text-gray-500 mt-1">Ringkasan kelebihan & kekurangan tiap karyawan.</p></div>'+
+    '<button id="runAnalysisBtn" onclick="runAnalysisNow()" class="px-4 py-2 rounded-lg bg-brand hover:bg-brand-dark text-ink font-semibold text-sm shrink-0">Analisis AI</button>'+
   '</div>';
 }
 function runAnalysisNow(){
   var btn = $('runAnalysisBtn');
-  if(btn){ btn.disabled=true; btn.textContent='Menganalisis... (mungkin 1-2 menit)'; btn.classList.add('opacity-60'); }
+  if(btn){ btn.disabled=true; btn.textContent='Menganalisis...'; btn.classList.add('opacity-60'); }
   google.script.run.withSuccessHandler(function(res){
     if(_handleAuth_(res)) return;
-    if(res && res._error){ alert('Gagal: '+res._error); if(btn){btn.disabled=false; btn.innerHTML='&#9889; Jalankan Analisis AI'; btn.classList.remove('opacity-60');} return; }
+    if(res && res._error){ alert('Gagal: '+res._error); if(btn){btn.disabled=false; btn.textContent='Analisis AI'; btn.classList.remove('opacity-60');} return; }
     renderAnalysis();
   }).withFailureHandler(function(e){
     alert('Gagal menjalankan analisis: '+(e&&e.message));
-    if(btn){ btn.disabled=false; btn.innerHTML='&#9889; Jalankan Analisis AI'; btn.classList.remove('opacity-60'); }
+    if(btn){ btn.disabled=false; btn.textContent='Analisis AI'; btn.classList.remove('opacity-60'); }
   }).runAnalysis(SESSION_TOKEN);
 }
 function renderAnalysisView(){
@@ -788,9 +788,9 @@ function renderAnalysisView(){
   var subjects = (ANALYSIS.subjects||[]).filter(function(s){ return !ANALYSIS_DIV || norm(s.division)===norm(ANALYSIS_DIV); });
   var html = analysisToolbar() + analysisFilterBar();
   if(ANALYSIS_EMP){
-    html += rcaSection(ANALYSIS_EMP);
     var sel = subjects.filter(function(s){ return s.name===ANALYSIS_EMP; });
-    html += sel.length ? '<div class="grid gap-5">'+ sel.map(analysisCard).join('') +'</div>' : '';
+    html += sel.length ? '<div class="grid gap-5 mb-5">'+ sel.map(analysisCard).join('') +'</div>' : '';
+    html += rcaSection(ANALYSIS_EMP);
   } else if(!subjects.length){
     html += emptyState('Belum ada hasil analisis'+(ANALYSIS_DIV?' untuk divisi '+ANALYSIS_DIV:'')+'.');
   } else {
@@ -818,7 +818,7 @@ function analysisFilterBar(){
       '<select onchange="onAnalysisDiv(this.value)" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand">'+divOpts+'</select></div>'+
     '<div><label class="text-xs font-semibold text-gray-400">PILIH KARYAWAN</label>'+
       '<select onchange="onAnalysisEmp(this.value)" class="w-full mt-1 px-3 py-2 rounded-lg border border-gray-200 outline-none focus:border-brand">'+empOpts+'</select></div>'+
-    '<div class="text-xs text-gray-500">Pilih karyawan lalu jalankan <b>Root Cause Analysis</b> untuk melihat MECE, diagram Fishbone, dan saran titik mulai 5 Whys.</div>'+
+    '<div class="text-xs text-gray-500">Pilih karyawan untuk melihat analisis akar masalahnya.</div>'+
   '</div>';
 }
 function onAnalysisDiv(v){ ANALYSIS_DIV=v; ANALYSIS_EMP=''; renderAnalysisView(); }
@@ -841,15 +841,14 @@ function runRCANow(){
 }
 function rcaSection(name){
   var r = RCA_CACHE[name];
-  var btnLabel = r && !r._error ? 'Analisis Ulang' : 'Jalankan Root Cause Analysis';
+  var btnLabel = r && !r._error ? 'Analisis Ulang' : 'Analisis Akar Masalah';
   var head = '<div class="card p-5 mb-5 fade-in">'+
-    '<div class="flex items-center justify-between flex-wrap gap-2 mb-1">'+
-      '<h3 class="font-extrabold text-lg">&#128269; Root Cause Analysis &mdash; '+esc(name)+'</h3>'+
+    '<div class="flex items-center justify-between flex-wrap gap-2 mb-3">'+
+      '<h3 class="font-extrabold text-lg">Root Cause Analysis</h3>'+
       '<button id="runRcaBtn" onclick="runRCANow()" '+(RCA_LOADING?'disabled':'')+' class="px-4 py-2 rounded-lg bg-ink text-white text-sm font-semibold hover:bg-gray-800 '+(RCA_LOADING?'opacity-60':'')+'">'+(RCA_LOADING?'Menganalisis...':btnLabel)+'</button>'+
-    '</div>'+
-    '<p class="text-xs text-gray-400 mb-3">Alur: <b>MECE</b> (pisahkan penyebab) &rarr; <b>Fishbone</b> (Ishikawa) &rarr; saran titik mulai <b>5 Whys</b>. Mengintegrasikan NLP + LLM.</p>';
+    '</div>';
   if(RCA_LOADING){
-    return head + '<div class="text-center py-10 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-2"></div><p class="text-sm">Menelusuri akar masalah (MECE, fishbone, 5 whys)...</p></div></div>';
+    return head + '<div class="text-center py-10 text-gray-400"><div class="inline-block w-8 h-8 border-4 border-brand border-t-transparent rounded-full animate-spin mb-2"></div><p class="text-sm">Menelusuri akar masalah...</p></div></div>';
   }
   if(!r){ return head + '<p class="text-sm text-gray-400">Klik tombol di atas untuk menelusuri akar masalah <b>'+esc(name)+'</b>.</p></div>'; }
   if(r._error){ return head + '<div class="bg-amber-50 text-amber-700 text-sm rounded-lg p-3">'+esc(r._error)+'</div></div>'; }
@@ -872,7 +871,7 @@ function rcaBody(r){
   var fishbone =
     '<div class="mb-2 flex items-center justify-between"><h4 class="font-bold text-sm">Diagram Fishbone (Ishikawa)</h4>'+
       '<div class="flex items-center gap-2">'+aiTag+'<span class="num text-[10px] px-1.5 py-0.5 rounded bg-gray-100 text-gray-600">keyakinan '+Math.round((Number(r.confidence)||0)*100)+'%</span></div></div>'+
-    '<div class="card p-2 mb-5 overflow-x-auto"><div id="fishbone" style="min-width:760px"></div></div>';
+    '<div class="card p-2 mb-5 overflow-x-auto"><div id="fishbone" style="min-width:920px"></div></div>';
   // 3) MECE table
   var mece = '<h4 class="font-bold text-sm mb-2">Penyebab ter-MECE (6 kategori)</h4><div class="grid md:grid-cols-2 lg:grid-cols-3 gap-3 mb-5">';
   (r.categories||[]).forEach(function(c){
@@ -904,55 +903,64 @@ function meceColor(id){
   var map = { M1:'#D97706', M2:'#3B82F6', M3:'#22C55E', M4:'#A855F7', M5:'#EF4444', M6:'#0EA5E9' };
   return map[id] || '#111111';
 }
-// ---- Gambar Fishbone sebagai SVG ----
+// ---- Gambar Fishbone (Ishikawa) sebagai SVG + panel teks otomatis (word-wrap) ----
 function drawFishbone(r){
   var host = $('fishbone'); if(!host) return;
-  var W=760, H=460, midY=H/2, headX=W-150;
-  // posisi tulang: 3 atas, 3 bawah (urutan M1..M6)
-  var slots = [
-    {id:'M1', sx:170, dir:-1}, {id:'M2', sx:330, dir:-1}, {id:'M3', sx:490, dir:-1},
-    {id:'M4', sx:250, dir:1},  {id:'M5', sx:410, dir:1},  {id:'M6', sx:570, dir:1}
-  ];
+  var W=940, H=520, midY=H/2, spineX0=20, headX=720;
+  var panelW=210, panelH=152;
+  var panelX=[20, 250, 480];      // posisi X panel (kiri ke kanan)
+  var attach=[250, 430, 610];     // titik tempel di tulang punggung
+  var topIds=['M1','M2','M3'], botIds=['M4','M5','M6'];
   var byId={}; (r.categories||[]).forEach(function(c){ byId[c.id]=c; });
-  var svg = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" style="font-family:Plus Jakarta Sans">';
-  // spine
-  svg += '<line x1="40" y1="'+midY+'" x2="'+headX+'" y2="'+midY+'" stroke="#111" stroke-width="3"/>';
-  svg += '<polygon points="'+headX+','+(midY-8)+' '+headX+','+(midY+8)+' '+(headX+14)+','+midY+'" fill="#111"/>';
-  // head (effect)
-  svg += '<rect x="'+(headX+14)+'" y="'+(midY-46)+'" width="132" height="92" rx="10" fill="#FEE2E2" stroke="#FCA5A5"/>';
-  svg += fishText(headX+22, midY-28, r.effect||'', 17, 4, '#991B1B', 11, true);
-  // bones
-  slots.forEach(function(s){
-    var c = byId[s.id] || {id:s.id, name:s.id, causes:[]};
-    var color = meceColor(s.id);
-    var endX = s.sx-90;
-    var endY = midY + s.dir*(midY-44);
-    // tulang diagonal
-    svg += '<line x1="'+s.sx+'" y1="'+midY+'" x2="'+endX+'" y2="'+endY+'" stroke="'+color+'" stroke-width="2.5"/>';
-    // label kategori di ujung
-    var labY = endY + (s.dir<0? -6 : 18);
-    svg += '<rect x="'+(endX-6)+'" y="'+(labY-13)+'" width="150" height="18" rx="5" fill="'+color+'"/>';
-    svg += '<text x="'+(endX)+'" y="'+(labY)+'" font-size="11" font-weight="700" fill="#fff">'+escSvg(s.id+' '+c.name).slice(0,24)+'</text>';
-    // sampai 3 penyebab sebagai teks kecil dekat tulang
-    var causes=(c.causes||[]).slice(0,3);
-    causes.forEach(function(x,i){
-      var cy = s.dir<0 ? (midY - 30 - i*16 - (s.sx-endX)*0) : (midY + 36 + i*16);
-      // posisikan teks di sepanjang sisi tulang
-      var tx = (s.sx + endX)/2 - 60;
-      var ty = (midY + endY)/2 + (s.dir<0? (-i*15-6) : (i*15+10));
-      svg += '<text x="'+tx+'" y="'+ty+'" font-size="9.5" fill="#374151">&#8226; '+escSvg(x.cause).slice(0,34)+'</text>';
-    });
+
+  var s = '<svg viewBox="0 0 '+W+' '+H+'" width="100%" preserveAspectRatio="xMidYMid meet" style="font-family:Plus Jakarta Sans">';
+  // tulang punggung + panah
+  s += '<line x1="'+spineX0+'" y1="'+midY+'" x2="'+headX+'" y2="'+midY+'" stroke="#111" stroke-width="3"/>';
+  s += '<polygon points="'+headX+','+(midY-9)+' '+headX+','+(midY+9)+' '+(headX+16)+','+midY+'" fill="#111"/>';
+  // kepala ikan (effect)
+  s += _foHead_(headX+16, midY-74, 188, 148, r.effect||'');
+  // tulang atas
+  topIds.forEach(function(id,k){
+    var c = byId[id] || {id:id, name:id, causes:[]};
+    var ax=attach[k], px=panelX[k], cx=px+panelW/2, cy=8+panelH;
+    s += '<line x1="'+ax+'" y1="'+midY+'" x2="'+cx+'" y2="'+cy+'" stroke="'+meceColor(id)+'" stroke-width="2.5"/>';
+    s += _foPanel_(px, 8, panelW, panelH, c, 'top');
   });
-  svg += '</svg>';
-  host.innerHTML = svg;
+  // tulang bawah
+  botIds.forEach(function(id,k){
+    var c = byId[id] || {id:id, name:id, causes:[]};
+    var ax=attach[k], px=panelX[k], py=H-8-panelH, cx=px+panelW/2;
+    s += '<line x1="'+ax+'" y1="'+midY+'" x2="'+cx+'" y2="'+py+'" stroke="'+meceColor(id)+'" stroke-width="2.5"/>';
+    s += _foPanel_(px, py, panelW, panelH, c, 'bot');
+  });
+  s += '</svg>';
+  host.innerHTML = s;
 }
-function escSvg(s){ return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
-// teks SVG multi-baris sederhana (word wrap manual)
-function fishText(x,y,str,maxChars,maxLines,color,size,bold){
-  str=String(str==null?'':str); var words=str.split(' '), lines=[], cur='';
-  for(var i=0;i<words.length;i++){ var t=cur?cur+' '+words[i]:words[i]; if(t.length>maxChars){ if(cur)lines.push(cur); cur=words[i]; } else cur=t; if(lines.length>=maxLines)break; }
-  if(cur&&lines.length<maxLines)lines.push(cur);
-  return lines.map(function(l,i){ return '<text x="'+x+'" y="'+(y+i*14)+'" font-size="'+size+'" font-weight="'+(bold?700:400)+'" fill="'+color+'">'+escSvg(l)+'</text>'; }).join('');
+function _foHead_(x,y,w,h,text){
+  return '<foreignObject x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'">'+
+    '<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:'+w+'px;height:'+h+'px;display:flex;align-items:center;justify-content:center;background:#FEE2E2;border:1px solid #FCA5A5;border-radius:12px;padding:10px;">'+
+    '<div style="font-size:12px;font-weight:700;color:#991B1B;text-align:center;line-height:1.3;overflow-wrap:anywhere;">'+esc(text)+'</div>'+
+    '</div></foreignObject>';
+}
+function _foPanel_(x,y,w,h,c,pos){
+  var color = meceColor(c.id);
+  var causes = (c.causes||[]);
+  var shown = causes.slice(0,3);
+  var extra = causes.length - shown.length;
+  var items = shown.map(function(z){
+    return '<li style="font-size:10px;color:#374151;line-height:1.25;margin-bottom:3px;overflow-wrap:anywhere;">'+esc(z.cause)+'</li>';
+  }).join('');
+  if(extra>0){ items += '<li style="font-size:10px;color:#9CA3AF;list-style:none;margin-left:-14px;">+'+extra+' penyebab lagi</li>'; }
+  if(!causes.length){ items = '<li style="font-size:10px;color:#D1D5DB;list-style:none;margin-left:-14px;">tidak ada penyebab</li>'; }
+  var label = '<div style="background:'+color+';color:#fff;font-size:10.5px;font-weight:700;padding:3px 9px;border-radius:6px;display:inline-block;overflow-wrap:anywhere;">'+esc(c.id+' \u00b7 '+c.name)+'</div>';
+  var ul = '<ul style="margin:5px 0 0 0;padding-left:14px;">'+items+'</ul>';
+  // label diletakkan dekat sisi tulang: panel atas -> label di bawah; panel bawah -> label di atas
+  var justify = pos==='top' ? 'flex-end' : 'flex-start';
+  var inner = pos==='top' ? (ul + label) : (label + ul);
+  return '<foreignObject x="'+x+'" y="'+y+'" width="'+w+'" height="'+h+'">'+
+    '<div xmlns="http://www.w3.org/1999/xhtml" style="box-sizing:border-box;width:'+w+'px;height:'+h+'px;display:flex;flex-direction:column;justify-content:'+justify+';">'+
+    inner +
+    '</div></foreignObject>';
 }
 
 function confBadge(c){
