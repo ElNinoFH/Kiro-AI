@@ -1116,9 +1116,9 @@ var ANALYSIS_HEADERS = [
 ];
 
 var ANALYSIS_CFG = {
-  model: 'gemini-2.0-flash',     // model Gemini (UrlFetchApp)
+  model: 'llama-3.3-70b-versatile', // model default (Groq). Override via setGeminiModel()
   threshold: 0.85,               // >= terkonfirmasi, < perlu ditinjau
-  selfConsistencyRuns: 3,        // jumlah panggilan LLM untuk majority voting
+  selfConsistencyRuns: 2,        // 2 run cukup untuk Groq (hemat kuota RPM)
   temperature: 0.2,              // rendah = lebih deterministik
   // ambang kuantitatif
   reworkLow: 10, reworkHigh: 25, // % rework
@@ -1127,13 +1127,16 @@ var ANALYSIS_CFG = {
 };
 
 // ---- Setup & ambil API key (aman, lewat Script Properties) -------------------
+// Menerima key Groq (gsk_...) maupun Google Gemini (AIza... / AQ...).
 function setupGeminiKey(key) {
   if (!key || String(key).trim().length < 10) {
-    Logger.log('ERROR: key tidak valid. Pakai: setupGeminiKey("API_KEY_ANDA")');
+    Logger.log('ERROR: key tidak valid. Pakai: setupGeminiKey("gsk_...")');
     return;
   }
-  PropertiesService.getScriptProperties().setProperty(PROP_GEMINI_KEY, String(key).trim());
-  Logger.log('Gemini API key tersimpan di Script Properties. Aman.');
+  var k = String(key).trim();
+  PropertiesService.getScriptProperties().setProperty(PROP_GEMINI_KEY, k);
+  var provider = k.indexOf('gsk_') === 0 ? 'Groq' : 'Google Gemini';
+  Logger.log(provider + ' API key tersimpan di Script Properties. Aman.');
 }
 function _getGeminiKey_() {
   return PropertiesService.getScriptProperties().getProperty(PROP_GEMINI_KEY) || '';
@@ -1380,55 +1383,90 @@ function _buildAnalysisPrompt_(subjectName, division, fields) {
   ].join('\n');
 }
 
+// Deteksi provider berdasarkan prefix key.
+function _isGroq_(key) { return String(key || '').indexOf('gsk_') === 0; }
+
+// Panggil LLM — otomatis routing ke Groq atau Gemini berdasarkan key.
 function _callGemini_(prompt) {
   var key = _getGeminiKey_();
   if (!key) { return null; }
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + _getModel_() + ':generateContent';
+  var model = _getModel_();
 
-  var payload = {
-    contents: [{ role: 'user', parts: [{ text: prompt }] }],
-    generationConfig: { temperature: ANALYSIS_CFG.temperature, responseMimeType: 'application/json' }
-  };
+  var url, headers, payload;
+  if (_isGroq_(key)) {
+    // ---- Groq (OpenAI-compatible) ----
+    url = 'https://api.groq.com/openai/v1/chat/completions';
+    headers = { 'Authorization': 'Bearer ' + key };
+    payload = {
+      model: model,
+      messages: [{ role: 'user', content: prompt }],
+      temperature: ANALYSIS_CFG.temperature,
+      response_format: { type: 'json_object' }
+    };
+  } else {
+    // ---- Google Gemini ----
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
+    headers = { 'x-goog-api-key': key };
+    payload = {
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      generationConfig: { temperature: ANALYSIS_CFG.temperature, responseMimeType: 'application/json' }
+    };
+  }
+
   try {
     var res = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json',
-      headers: { 'x-goog-api-key': key },   // cara resmi; berlaku utk key AIza... maupun AQ...
+      method: 'post', contentType: 'application/json', headers: headers,
       payload: JSON.stringify(payload), muteHttpExceptions: true
     });
     var code = res.getResponseCode();
-    if (code !== 200) { Logger.log('Gemini HTTP ' + code + ': ' + res.getContentText().slice(0, 400)); return null; }
+    if (code !== 200) { Logger.log('LLM HTTP ' + code + ': ' + res.getContentText().slice(0, 400)); return null; }
     var json = JSON.parse(res.getContentText());
-    var cand = json.candidates && json.candidates[0];
-    if (!cand || !cand.content || !cand.content.parts || !cand.content.parts[0]) { return null; }
-    return cand.content.parts[0].text;
+    if (_isGroq_(key)) {
+      // Groq/OpenAI format
+      var choice = json.choices && json.choices[0];
+      return (choice && choice.message && choice.message.content) ? choice.message.content : null;
+    } else {
+      // Gemini format
+      var cand = json.candidates && json.candidates[0];
+      if (!cand || !cand.content || !cand.content.parts || !cand.content.parts[0]) { return null; }
+      return cand.content.parts[0].text;
+    }
   } catch (e) {
-    Logger.log('Gemini error: ' + e.message);
+    Logger.log('LLM error: ' + e.message);
     return null;
   }
 }
 
-// Diagnosa cepat: jalankan fungsi ini dari editor lalu lihat Execution log.
-// Menampilkan kode HTTP + isi respons asli dari Gemini (sukses atau error).
+// Diagnosa cepat — jalankan dari editor, lihat Execution log.
 function testGemini() {
   var key = _getGeminiKey_();
-  if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("...") dulu.'); return; }
-  Logger.log('Key terdeteksi (awalan): ' + key.slice(0, 6) + '... panjang ' + key.length);
-  Logger.log('Model aktif: ' + _getModel_());
-  var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + _getModel_() + ':generateContent';
+  if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("gsk_...") dulu.'); return; }
+  var provider = _isGroq_(key) ? 'Groq' : 'Google Gemini';
+  var model = _getModel_();
+  Logger.log('Provider : ' + provider);
+  Logger.log('Key      : ' + key.slice(0, 8) + '... (panjang ' + key.length + ')');
+  Logger.log('Model    : ' + model);
+
+  var url, headers, payload;
+  if (_isGroq_(key)) {
+    url = 'https://api.groq.com/openai/v1/chat/completions';
+    headers = { 'Authorization': 'Bearer ' + key };
+    payload = { model: model, messages: [{ role: 'user', content: 'Balas hanya satu kata: OK' }] };
+  } else {
+    url = 'https://generativelanguage.googleapis.com/v1beta/models/' + model + ':generateContent';
+    headers = { 'x-goog-api-key': key };
+    payload = { contents: [{ role: 'user', parts: [{ text: 'Balas hanya satu kata: OK' }] }] };
+  }
   try {
     var res = UrlFetchApp.fetch(url, {
-      method: 'post', contentType: 'application/json',
-      headers: { 'x-goog-api-key': key },
-      payload: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'Balas hanya dengan kata: OK' }] }] }),
-      muteHttpExceptions: true
+      method: 'post', contentType: 'application/json', headers: headers,
+      payload: JSON.stringify(payload), muteHttpExceptions: true
     });
     Logger.log('HTTP ' + res.getResponseCode());
-    Logger.log('Respons: ' + res.getContentText().slice(0, 900));
-    if (res.getResponseCode() === 200) { Logger.log('>>> BERHASIL. API key valid & request terkirim. Cek usage di AI Studio.'); }
-    else { Logger.log('>>> GAGAL. Lihat pesan error di atas (mis. API_KEY_INVALID, model tidak ditemukan, dsb).'); }
-  } catch (e) {
-    Logger.log('Exception: ' + e.message);
-  }
+    Logger.log('Respons: ' + res.getContentText().slice(0, 600));
+    if (res.getResponseCode() === 200) { Logger.log('>>> BERHASIL. ' + provider + ' API terhubung & key valid.'); }
+    else { Logger.log('>>> GAGAL. Lihat pesan error di atas.'); }
+  } catch (e) { Logger.log('Exception: ' + e.message); }
 }
 
 function _parseGeminiJson_(text) {
@@ -1989,64 +2027,75 @@ function _getModel_() {
 }
 
 function setGeminiModel(name) {
-  if (!name) { Logger.log('Pakai: setGeminiModel("gemini-2.5-flash")'); return; }
+  if (!name) { Logger.log('Pakai: setGeminiModel("llama-3.3-70b-versatile")'); return; }
   PropertiesService.getScriptProperties().setProperty(PROP_GEMINI_MODEL, String(name).trim());
   Logger.log('Model disetel ke: ' + String(name).trim());
 }
 
-// Coba beberapa model, pakai & simpan model pertama yang mengembalikan HTTP 200.
+// Coba kandidat model, simpan yang pertama HTTP 200.
+// Otomatis memilih daftar kandidat berdasarkan provider (Groq atau Gemini).
 function findWorkingGeminiModel() {
   var key = _getGeminiKey_();
-  if (!key) { Logger.log('BELUM ADA API KEY. Jalankan setupGeminiKey("...") dulu.'); return; }
-  var candidates = [
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite',
-    'gemini-2.0-flash',
-    'gemini-2.0-flash-lite',
-    'gemini-flash-latest',
-    'gemini-1.5-flash'
-  ];
+  if (!key) { Logger.log('BELUM ADA API KEY.'); return; }
+  var groq = _isGroq_(key);
+  Logger.log('Provider: ' + (groq ? 'Groq' : 'Google Gemini'));
+  var candidates = groq
+    ? ['llama-3.3-70b-versatile', 'llama-3.1-8b-instant', 'llama3-8b-8192', 'mixtral-8x7b-32768', 'gemma2-9b-it']
+    : ['gemini-2.5-flash', 'gemini-2.5-flash-lite', 'gemini-2.0-flash', 'gemini-2.0-flash-lite', 'gemini-1.5-flash'];
   var found = '';
   for (var i = 0; i < candidates.length; i++) {
     var m = candidates[i];
-    var url = 'https://generativelanguage.googleapis.com/v1beta/models/' + m + ':generateContent';
+    var url, headers, payload;
+    if (groq) {
+      url = 'https://api.groq.com/openai/v1/chat/completions';
+      headers = { 'Authorization': 'Bearer ' + key };
+      payload = { model: m, messages: [{ role: 'user', content: 'OK' }], max_tokens: 5 };
+    } else {
+      url = 'https://generativelanguage.googleapis.com/v1beta/models/' + m + ':generateContent';
+      headers = { 'x-goog-api-key': key };
+      payload = { contents: [{ role: 'user', parts: [{ text: 'OK' }] }] };
+    }
     try {
       var res = UrlFetchApp.fetch(url, {
-        method: 'post', contentType: 'application/json',
-        headers: { 'x-goog-api-key': key },
-        payload: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: 'OK' }] }] }),
-        muteHttpExceptions: true
+        method: 'post', contentType: 'application/json', headers: headers,
+        payload: JSON.stringify(payload), muteHttpExceptions: true
       });
       var code = res.getResponseCode();
       Logger.log(m + ' -> HTTP ' + code);
       if (code === 200) { found = m; break; }
-      else { Logger.log('   ' + res.getContentText().slice(0, 160)); }
+      else { Logger.log('   ' + res.getContentText().slice(0, 180)); }
     } catch (e) { Logger.log(m + ' -> error ' + e.message); }
-    Utilities.sleep(800); // jeda agar tidak kena rate limit
+    Utilities.sleep(600);
   }
   if (found) {
     setGeminiModel(found);
-    Logger.log('>>> BERHASIL. Model yang dipakai: ' + found + '. Dashboard siap memakai AI.');
+    Logger.log('>>> BERHASIL. Model aktif: ' + found);
   } else {
-    Logger.log('>>> Tidak ada model dengan kuota gratis untuk key ini.');
-    Logger.log('    Kemungkinan akun belum punya free tier. Aktifkan billing di Google Cloud project ');
-    Logger.log('    (https://aistudio.google.com -> Get API key -> project -> enable billing), atau pakai akun/region lain.');
+    Logger.log('>>> Semua model gagal. Cek kuota / billing akun Anda.');
   }
 }
 
-// Tampilkan daftar model yang dapat diakses oleh API key Anda.
+// Daftar model yang tersedia untuk key aktif.
 function listGeminiModels() {
   var key = _getGeminiKey_();
   if (!key) { Logger.log('BELUM ADA API KEY.'); return; }
+  var groq = _isGroq_(key);
+  var url = groq
+    ? 'https://api.groq.com/openai/v1/models'
+    : 'https://generativelanguage.googleapis.com/v1beta/models';
+  var headers = groq ? { 'Authorization': 'Bearer ' + key } : { 'x-goog-api-key': key };
   try {
-    var res = UrlFetchApp.fetch('https://generativelanguage.googleapis.com/v1beta/models', {
-      method: 'get', headers: { 'x-goog-api-key': key }, muteHttpExceptions: true
-    });
+    var res = UrlFetchApp.fetch(url, { method: 'get', headers: headers, muteHttpExceptions: true });
     Logger.log('HTTP ' + res.getResponseCode());
     var json = JSON.parse(res.getContentText());
-    (json.models || []).forEach(function (m) {
-      var methods = (m.supportedGenerationMethods || []).join(',');
-      if (methods.indexOf('generateContent') >= 0) { Logger.log(m.name + '  [' + methods + ']'); }
+    var list = json.data || json.models || [];
+    list.forEach(function (m) {
+      var id = m.id || m.name || '';
+      if (!groq) {
+        var methods = (m.supportedGenerationMethods || []).join(',');
+        if (methods.indexOf('generateContent') < 0) { return; }
+      }
+      Logger.log(id);
     });
   } catch (e) { Logger.log('error: ' + e.message); }
 }
