@@ -11,6 +11,7 @@ Sistem audit kinerja berbasis Google Form + Google Sheets + Web Dashboard, diran
 |---|---|
 | `Code.gs` | Ditempel ke Google Apps Script. Berisi: generator 4 Google Form, integrasi Spreadsheet master, server-side dashboard (`doGet` + `getDashboardData`), dan **engine Analisis AI** (`runAnalysis` + `getAnalysisData`) |
 | `Dashboard.html` | Ditempel sebagai file HTML baru di Apps Script. Berisi UI dashboard lengkap dengan login, chart, heatmap, **tab Analysis (kelebihan & kekurangan)**, dan tabel data mentah |
+| `appsscript.json` | Manifest project. Berisi **OAuth scopes** (termasuk `script.external_request` agar bisa memanggil Gemini API) & konfigurasi Web App. Aktifkan lewat Project Settings → "Show appsscript.json manifest file in editor" |
 
 ---
 
