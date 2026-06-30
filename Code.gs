@@ -2099,3 +2099,103 @@ function listGeminiModels() {
     });
   } catch (e) { Logger.log('error: ' + e.message); }
 }
+
+
+
+// =============================================================================
+//  ANALISIS PER-KARYAWAN (ON-DEMAND) — dipicu manual dari tab Karyawan
+//  Tujuan: hemat kuota API (1 request per tombol, satu per satu).
+//   - analyzeOKR(token, name)      : tafsir capaian OKR 1 karyawan
+//   - analyzeEmployee(token, name) : kelebihan & kekurangan 1 karyawan
+//   (getRootCause sudah ada; membaca sheet Analysis yang diisi analyzeEmployee)
+// =============================================================================
+
+function _findEmployee_(data, name) {
+  var e = null;
+  (data.employees || []).forEach(function (x) { if (norm_(x.name) === norm_(name)) { e = x; } });
+  return e;
+}
+
+function _upsertOkr_(ss, name, okr, ts) {
+  var sh = ss.getSheetByName(OKR_SHEET) || ss.insertSheet(OKR_SHEET);
+  if (sh.getLastRow() === 0) { sh.getRange(1, 1, 1, OKR_HEADERS.length).setValues([OKR_HEADERS]); }
+  var all = sh.getDataRange().getValues();
+  var kept = [OKR_HEADERS.slice()];
+  for (var i = 1; i < all.length; i++) { if (norm_(all[i][0]) !== norm_(name)) { kept.push(all[i]); } }
+  kept.push([name, (okr.pct == null ? '' : okr.pct), okr.status || '', okr.summary || '', ts]);
+  sh.clearContents();
+  sh.getRange(1, 1, kept.length, OKR_HEADERS.length).setValues(kept);
+}
+
+function analyzeOKR(token, name) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
+  try {
+    var data = _buildDashboardData();
+    if (data._error) { return { _error: data._error }; }
+    var e = _findEmployee_(data, name);
+    if (!e) { return { _error: 'Karyawan tidak ditemukan.' }; }
+    if (!(e.okrTarget && String(e.okrTarget).trim()) && !(e.okrActual && String(e.okrActual).trim())) {
+      return { pct: null, status: '', summary: '', noData: true };
+    }
+    var okr = _interpretOKR_(e.okrTarget, e.okrActual);
+    if (!okr) {
+      // Fallback: hanya bila angka sederhana
+      if (_isSimpleNum_(e.okrTarget) && _isSimpleNum_(e.okrActual)) {
+        var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
+        if (t) { okr = { pct: Math.round(a / t * 100), status: 'Hitung langsung', summary: '' }; }
+      }
+    }
+    if (!okr) { return { _error: 'AI tidak tersedia / gagal. Pastikan API key terpasang & model valid.' }; }
+    var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+    try { _upsertOkr_(getSpreadsheet_(), e.name, okr, ts); } catch (e2) { Logger.log('upsertOkr: ' + e2.message); }
+    return { pct: okr.pct, status: okr.status, summary: okr.summary, aiActive: !!_getGeminiKey_() };
+  } catch (err) {
+    return { _error: String(err && err.message || err) };
+  }
+}
+
+function _upsertAnalysis_(ss, e, findings) {
+  var sh = ss.getSheetByName(ANALYSIS_SHEET) || ss.insertSheet(ANALYSIS_SHEET);
+  if (sh.getLastRow() === 0) { sh.getRange(1, 1, 1, ANALYSIS_HEADERS.length).setValues([ANALYSIS_HEADERS]); }
+  var all = sh.getDataRange().getValues();
+  var kept = [ANALYSIS_HEADERS.slice()];
+  for (var i = 1; i < all.length; i++) { if (norm_(all[i][1]) !== norm_(e.name)) { kept.push(all[i]); } }
+  var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
+  findings.forEach(function (f) {
+    var status = f.confidence >= ANALYSIS_CFG.threshold ? 'Terkonfirmasi' : 'Perlu ditinjau';
+    kept.push([ts, e.name, 'Karyawan', e.division || '', f.kategori, f.aspek, f.temuan, f.bukti, f.sumber, f.confidence, f.metode, status]);
+  });
+  sh.clearContents();
+  sh.getRange(1, 1, kept.length, ANALYSIS_HEADERS.length).setValues(kept);
+}
+
+function analyzeEmployee(token, name) {
+  if (!_checkSession_(token)) { return { _auth: true }; }
+  try {
+    var data = _buildDashboardData();
+    if (data._error) { return { _error: data._error }; }
+    var e = _findEmployee_(data, name);
+    if (!e) { return { _error: 'Karyawan tidak ditemukan.' }; }
+    var mr = null;
+    (data.managerEval || []).forEach(function (m) { if (norm_(m.employee) === norm_(e.name)) { mr = m; } });
+
+    var findings = _analyzeQuant_(e, data.managerEval)
+      .concat(_analyzeNarrative_(e.name, e.division, _narrativeFields_(e, mr)));
+    findings = _dedupFindings_(findings);
+
+    try { _upsertAnalysis_(getSpreadsheet_(), e, findings); } catch (e2) { Logger.log('upsertAnalysis: ' + e2.message); }
+
+    var kelebihan = [], kekurangan = [];
+    findings.forEach(function (f) {
+      var item = {
+        aspek: f.aspek, temuan: f.temuan, bukti: f.bukti, sumber: f.sumber,
+        confidence: f.confidence, metode: f.metode,
+        status: f.confidence >= ANALYSIS_CFG.threshold ? 'Terkonfirmasi' : 'Perlu ditinjau'
+      };
+      if (f.kategori === 'kelebihan') { kelebihan.push(item); } else { kekurangan.push(item); }
+    });
+    return { employee: e.name, division: e.division, aiActive: !!_getGeminiKey_(), kelebihan: kelebihan, kekurangan: kekurangan };
+  } catch (err) {
+    return { _error: String(err && err.message || err) };
+  }
+}
