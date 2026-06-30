@@ -706,6 +706,9 @@ function _buildDashboardData() {
   data.managerSelf = _dedup_(data.managerSelf, 'manager');
   data.ownerEval  = _dedup_(data.ownerEval,  'manager');
 
+  // Tempelkan hasil tafsiran OKR berbasis AI (jika sudah pernah dihitung via runAnalysis)
+  try { _attachOkr_(ss, data); } catch (e) { Logger.log('attachOkr: ' + e.message); }
+
   return data;
 }
 
@@ -1216,14 +1219,23 @@ function _analyzeQuant_(e, managerEval) {
     }
   }
 
-  // 3) OKR capaian (lapor mandiri karyawan; manager tidak mencatat aktual).
-  var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
-  if (t && a != null) {
-    var pct = Math.round(a / t * 100);
-    if (pct >= ANALYSIS_CFG.okrHigh) {
-      f.push(_mkFinding_('kelebihan', 'Pencapaian Target', 'Capaian OKR sangat baik (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR (lapor mandiri)', 0.9, 'rule'));
-    } else if (pct < ANALYSIS_CFG.okrLow) {
-      f.push(_mkFinding_('kekurangan', 'Pencapaian Target', 'Capaian OKR di bawah ekspektasi (' + pct + '%)', a + '/' + t + ' (' + pct + '%)', 'OKR (lapor mandiri)', 0.9, 'rule'));
+  // 3) OKR capaian — utamakan tafsiran AI (kontekstual); hindari angka naif yang menyesatkan.
+  var okrPct = (typeof e.okrPct === 'number' && isFinite(e.okrPct)) ? e.okrPct : null;
+  var okrSrc = 'OKR (ditafsirkan AI)';
+  var okrConf = 0.85;
+  if (okrPct == null) {
+    // Fallback hanya bila target & aktual berupa angka sederhana (bukan narasi multi-objektif).
+    if (_isSimpleNum_(e.okrTarget) && _isSimpleNum_(e.okrActual)) {
+      var t = firstNum_(e.okrTarget), a = firstNum_(e.okrActual);
+      if (t) { okrPct = Math.round(a / t * 100); okrSrc = 'OKR (lapor mandiri)'; okrConf = 0.8; }
+    }
+  }
+  if (okrPct != null) {
+    var okrEvid = e.okrSummary ? e.okrSummary : (okrPct + '%');
+    if (okrPct >= ANALYSIS_CFG.okrHigh) {
+      f.push(_mkFinding_('kelebihan', 'Pencapaian Target', 'Capaian OKR baik (' + okrPct + '%)' + (e.okrStatus ? ' — ' + e.okrStatus : ''), okrEvid, okrSrc, okrConf, 'rule'));
+    } else if (okrPct < ANALYSIS_CFG.okrLow) {
+      f.push(_mkFinding_('kekurangan', 'Pencapaian Target', 'Capaian OKR di bawah ekspektasi (' + okrPct + '%)' + (e.okrStatus ? ' — ' + e.okrStatus : ''), okrEvid, okrSrc, okrConf, 'rule'));
     }
   }
 
@@ -1500,6 +1512,7 @@ function runAnalysis(token) {
 
     var ts = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), 'yyyy-MM-dd HH:mm:ss');
     var rows = [];
+    var okrRows = [];
     var subjects = 0;
 
     (data.employees || []).forEach(function (e) {
@@ -1509,6 +1522,14 @@ function runAnalysis(token) {
       (data.managerEval || []).forEach(function (m) {
         if (norm_(m.employee) === norm_(e.name)) { mr = m; }
       });
+      // Tafsirkan OKR secara kontekstual via AI, lalu pakai untuk temuan & cache.
+      if ((e.okrTarget && String(e.okrTarget).trim()) || (e.okrActual && String(e.okrActual).trim())) {
+        var okr = _interpretOKR_(e.okrTarget, e.okrActual);
+        if (okr && okr.pct != null) {
+          e.okrPct = okr.pct; e.okrStatus = okr.status; e.okrSummary = okr.summary;
+          okrRows.push([e.name, okr.pct, okr.status || '', okr.summary || '', ts]);
+        }
+      }
       var findings = _analyzeQuant_(e, data.managerEval)
         .concat(_analyzeNarrative_(e.name, e.division, _narrativeFields_(e, mr)));
       findings = _dedupFindings_(findings);
@@ -1521,7 +1542,16 @@ function runAnalysis(token) {
     if (rows.length) {
       sh.getRange(2, 1, rows.length, ANALYSIS_HEADERS.length).setValues(rows);
     }
-    return { ok: true, subjects: subjects, findings: rows.length, lastUpdated: ts, aiActive: !!_getGeminiKey_() };
+
+    // Simpan cache tafsiran OKR (dipakai tab Karyawan & Divisi tanpa panggil AI lagi)
+    if (okrRows.length) {
+      var osh = ss.getSheetByName(OKR_SHEET) || ss.insertSheet(OKR_SHEET);
+      osh.clearContents();
+      osh.getRange(1, 1, 1, OKR_HEADERS.length).setValues([OKR_HEADERS]);
+      osh.getRange(2, 1, okrRows.length, OKR_HEADERS.length).setValues(okrRows);
+    }
+
+    return { ok: true, subjects: subjects, findings: rows.length, okr: okrRows.length, lastUpdated: ts, aiActive: !!_getGeminiKey_() };
   } catch (e) {
     return { _error: e.message };
   }
@@ -1839,4 +1869,84 @@ function getRootCause(token, employeeName) {
   } catch (e) {
     return { _error: String(e && e.message || e) };
   }
+}
+
+
+
+// =============================================================================
+//  OKR INTERPRETER (AI) — menafsirkan target & realisasi yang berupa narasi
+//  bebas menjadi tingkat pencapaian (%) yang kontekstual, bukan sekadar
+//  mengambil angka pertama. Hasil di-cache di sheet "OKR Analysis".
+// =============================================================================
+
+var OKR_SHEET = 'OKR Analysis';
+var OKR_HEADERS = ['Subjek', 'Capaian (%)', 'Status', 'Ringkasan', 'Timestamp'];
+
+// true bila string hanya berupa angka sederhana (mis. "85", "85%", "3.5") — aman dihitung naif.
+function _isSimpleNum_(s) {
+  s = String(s == null ? '' : s).trim();
+  return /^\d+([.,]\d+)?\s*%?$/.test(s);
+}
+
+function _interpretOKR_(target, actual) {
+  var key = _getGeminiKey_();
+  if (!key) { return null; }
+  target = String(target == null ? '' : target).trim();
+  actual = String(actual == null ? '' : actual).trim();
+  if (!target && !actual) { return null; }
+
+  var prompt = [
+    'Anda analis kinerja di URALA. Diberi TARGET dan REALISASI (OKR) yang sering ditulis bebas:',
+    'banyak objektif sekaligus, persen parsial, dan istilah seperti "all achieve", "under achieve", "ongoing", "sourcing".',
+    'TUGAS: simpulkan TINGKAT PENCAPAIAN KESELURUHAN secara kontekstual — JANGAN hanya mengambil angka.',
+    '',
+    'ATURAN:',
+    '- Persen pada metrik parsial (mis. "khusus impression 500%") JANGAN dihitung sebagai capaian objektif penuh; objektif yang tercapai maksimal dianggap ~100%, bukan 500%.',
+    '- "100% all achieve" = objektif tercapai penuh. "under achieve" = di bawah target. "ongoing/sourcing/0%" = belum berjalan (anggap rendah).',
+    '- Rata-ratakan secara adil lintas semua objektif yang disebut.',
+    '- Abaikan angka tahun/tanggal (mis. "2026") sebagai capaian.',
+    '- Hasil 0-100; boleh sedikit di atas 100 (maksimum 120) HANYA bila benar-benar over-achieve menyeluruh.',
+    '',
+    'TARGET:\n' + target,
+    '',
+    'REALISASI:\n' + actual,
+    '',
+    'Keluarkan HANYA JSON: {"pct":<angka 0-120>,"status":"<ringkas, mis. Sebagian besar tercapai>","summary":"<1-2 kalimat konteks>"}'
+  ].join('\n');
+
+  var runs = [];
+  for (var i = 0; i < 2; i++) {
+    var o = _parseGeminiObj_(_callGemini_(prompt));
+    if (o && typeof o.pct !== 'undefined' && o.pct !== null) { runs.push(o); }
+  }
+  if (!runs.length) { return null; }
+
+  var pcts = runs.map(function (o) { return Number(o.pct); }).filter(function (x) { return isFinite(x); });
+  if (!pcts.length) { return null; }
+  var pct = Math.round(pcts.reduce(function (a, b) { return a + b; }, 0) / pcts.length);
+  if (pct < 0) { pct = 0; }
+  if (pct > 120) { pct = 120; }
+  return { pct: pct, status: String(runs[0].status || ''), summary: String(runs[0].summary || '') };
+}
+
+function _readOkrCache_(ss) {
+  var out = {};
+  var sh = ss.getSheetByName(OKR_SHEET);
+  if (!sh || sh.getLastRow() < 2) { return out; }
+  var vv = sh.getDataRange().getValues();
+  for (var i = 1; i < vv.length; i++) {
+    var n = vv[i][0]; if (!n) { continue; }
+    var p = Number(vv[i][1]);
+    out[norm_(n)] = { pct: isFinite(p) ? p : null, status: _toStr_(vv[i][2]), summary: _toStr_(vv[i][3]) };
+  }
+  return out;
+}
+
+function _attachOkr_(ss, data) {
+  var cache = _readOkrCache_(ss);
+  (data.employees || []).forEach(function (e) {
+    var o = cache[norm_(e.name)];
+    if (o) { e.okrPct = o.pct; e.okrStatus = o.status; e.okrSummary = o.summary; }
+    else { e.okrPct = null; e.okrStatus = ''; e.okrSummary = ''; }
+  });
 }

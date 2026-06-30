@@ -345,8 +345,7 @@ function renderWorkloadChart(){
 function renderOkrChart(emps){
   destroyChart('cOkr');
   var rows = emps.map(function(e){
-    var t=firstNum(e.okrTarget), a=firstNum(e.okrActual);
-    var pct = (t&&a!=null)? Math.round(a/t*100) : null;
+    var pct = okrPctOf(e);
     return { name:e.name||'(tanpa nama)', pct:pct };
   }).filter(function(r){return r.pct!=null;});
   if(!rows.length){
@@ -452,13 +451,34 @@ function recBadge(rec){
   var k = norm(rec); var c = map[k] || ['#F3F4F6','#374151',''];
   return '<span class="px-3 py-1.5 rounded-lg text-sm font-bold" style="background:'+c[0]+';color:'+c[1]+'">'+c[2]+' '+esc(rec)+'</span>';
 }
+function isSimpleNum(s){ return /^\s*\d+([.,]\d+)?\s*%?\s*$/.test(String(s==null?'':s)); }
+function okrPctOf(e){
+  if(e && typeof e.okrPct==='number' && isFinite(e.okrPct)) return Math.round(e.okrPct);
+  if(e && e.okrPct!=null && e.okrPct!=='' && isFinite(Number(e.okrPct))) return Math.round(Number(e.okrPct));
+  if(e && isSimpleNum(e.okrTarget) && isSimpleNum(e.okrActual)){
+    var t=firstNum(e.okrTarget), a=firstNum(e.okrActual);
+    if(t) return Math.round(a/t*100);
+  }
+  return null;
+}
 function okrBox(e){
-  var t=firstNum(e.okrTarget), a=firstNum(e.okrActual);
-  var pct = (t&&a!=null)? Math.round(a/t*100) : null;
-  var bar = pct!=null ? '<div class="h-2.5 rounded-full bg-gray-100 mt-2 overflow-hidden"><div class="h-full rounded-full" style="width:'+Math.min(pct,100)+'%;background:'+(pct>=80?'#22C55E':(pct>=50?'#F0B429':'#FCA5A5'))+'"></div></div><p class="text-right text-xs num mt-1">'+pct+'%</p>' : '';
+  var pct = okrPctOf(e);
+  var aiMode = (e && typeof e.okrPct!=='undefined' && e.okrPct!=null && e.okrPct!=='');
+  var bar = '';
+  if(pct!=null){
+    var col = pct>=80?'#22C55E':(pct>=50?'#F0B429':'#FCA5A5');
+    bar = '<div class="h-2.5 rounded-full bg-gray-100 mt-2 overflow-hidden"><div class="h-full rounded-full" style="width:'+Math.min(pct,100)+'%;background:'+col+'"></div></div>'+
+      '<p class="text-right text-xs num mt-1">'+pct+'%'+(pct>100?' (over-achieve)':'')+'</p>';
+  } else {
+    var hasText = e && ((e.okrTarget&&String(e.okrTarget).trim())||(e.okrActual&&String(e.okrActual).trim()));
+    if(hasText) bar = '<p class="text-xs text-amber-600 mt-2">Jalankan <b>Analisis AI</b> agar capaian dinilai sesuai konteks.</p>';
+  }
+  var aiLine = aiMode && (e.okrStatus||e.okrSummary)
+    ? '<p class="text-xs text-gray-500 mt-2"><span class="px-1.5 py-0.5 rounded bg-blue-50 text-blue-600 text-[10px] font-semibold">AI</span> '+esc(e.okrStatus||'')+(e.okrSummary?' — '+esc(e.okrSummary):'')+'</p>'
+    : '';
   return '<div class="card p-4"><h3 class="font-bold mb-1 text-sm">Target & Realisasi (OKR)</h3>'+
     '<p class="text-sm text-gray-600"><b>Target:</b> '+esc(e.okrTarget||'-')+'</p>'+
-    '<p class="text-sm text-gray-600"><b>Aktual:</b> '+esc(e.okrActual||'-')+'</p>'+ bar +
+    '<p class="text-sm text-gray-600"><b>Aktual:</b> '+esc(e.okrActual||'-')+'</p>'+ bar + aiLine +
     (e.okrCause?'<p class="text-xs text-gray-400 mt-2"><b>Penyebab selisih:</b> '+esc(e.okrCause)+'</p>':'')+'</div>';
 }
 function workDetailBox(e){
@@ -560,7 +580,7 @@ function renderDivWork(divs){
 function renderDivScore(divs){
   var rows = divs.map(function(d){
     var es = divEmps(d);
-    var okr = avgOf(es.map(function(e){ var t=firstNum(e.okrTarget),a=firstNum(e.okrActual); return (t&&a!=null)?(a/t*100):null; }));
+    var okr = avgOf(es.map(function(e){ return okrPctOf(e); }));
     return { d:d, n:es.length,
       ot: avgOf(es.map(function(e){return firstNum(e.overtime);})),
       rw: avgOf(es.map(function(e){return firstNum(e.rework);})),
